@@ -108,12 +108,24 @@ export type {
 	AgentDefinition,
 	AgentProgress,
 	SingleResult,
+	ParentSessionMetadata,
 	SubagentEventPayload,
 	SubagentLifecyclePayload,
 	SubagentProgressPayload,
 	TaskParams,
 	TaskToolDetails,
 } from "./types";
+export type {
+	ExternalHarnessAdapter,
+	ExternalHarnessInput,
+	ExternalHarnessIsolationContext,
+} from "./external-harness/types";
+export {
+	ClaudeExternalHarnessAdapter,
+	claudeExternalHarnessAdapter,
+	codexExternalHarnessAdapter,
+	getExternalHarnessAdapter,
+} from "./external-harness";
 export {
 	TASK_SUBAGENT_EVENT_CHANNEL,
 	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
@@ -160,7 +172,7 @@ function renderDescription(options: TaskDescriptionOptions): string {
 	}
 	const renderedAgents = filteredAgents.map(agent => ({
 		name: agent.name,
-		description: agent.description,
+		description: `${agent.description}\nHarness: ${agent.harness ?? "omp"}`,
 		readOnly: isReadOnlyAgent(agent),
 		blocking: agent.blocking === true,
 	}));
