@@ -18,6 +18,7 @@ import { materializeImageReferenceLinks, shiftImageMarkers } from "../../modes/i
 import { createPromptActionAutocompleteProvider } from "../../modes/prompt-action-autocomplete";
 import { parseQueueShorthand, splitQueuedMessages } from "../../modes/queue-input";
 import { invokeSkillCommandFromText, isKnownSkillCommand } from "../../modes/skill-command";
+import { parseReplEvalInput } from "./repl-input";
 import type { InteractiveModeContext } from "../../modes/types";
 import manualContinuePrompt from "../../prompts/system/manual-continue.md" with { type: "text" };
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
@@ -88,41 +89,6 @@ function hasPasteText(value: unknown): value is PasteTarget {
 	return typeof value === "object" && value !== null && typeof (value as PasteTarget).pasteText === "function";
 }
 
-const SHELL_PROMPT_COMMAND_RE =
-	/^(?:\.{0,2}\/|~\/|cd(?:\s|$)|sudo(?:\s|$)|git(?:\s|$)|bun(?:\s|$)|npm(?:\s|$)|pnpm(?:\s|$)|yarn(?:\s|$)|node(?:\s|$)|python\d*(?:\s|$)|cargo(?:\s|$)|go(?:\s|$)|make(?:\s|$)|docker(?:\s|$)|kubectl(?:\s|$))/;
-const SHELL_PROMPT_OPERATOR_RE = /(?:^|\s)(?:&&|\|\||\||2>&1|[<>]{1,2})(?:\s|$)/;
-const OMP_STATUS_LINE_RE = /^\s*in:\s+\d+\s+out:\s+\d+(?:\s+cache\s+\S+)?\s+t:\s+\S+\s+tok\/s:\s+\S+/m;
-
-function looksLikePastedShellPrompt(code: string): boolean {
-	const firstLine = code.split("\n", 1)[0]?.trimStart() ?? "";
-	return (
-		SHELL_PROMPT_COMMAND_RE.test(firstLine) ||
-		SHELL_PROMPT_OPERATOR_RE.test(firstLine) ||
-		OMP_STATUS_LINE_RE.test(code)
-	);
-}
-
-function pythonCommandPrefixLength(trimmedText: string): 0 | 1 | 2 {
-	if (trimmedText.charCodeAt(0) !== 36 /* $ */) return 0;
-	if (trimmedText.charCodeAt(1) === 123 /* { */) return 0;
-
-	const prefixLength = trimmedText.charCodeAt(1) === 36 /* $ */ ? 2 : 1;
-	const next = trimmedText.charCodeAt(prefixLength);
-	if (Number.isNaN(next)) return prefixLength;
-	return next === 32 || next === 9 || next === 10 || next === 13 ? prefixLength : 0;
-}
-
-function parsePythonCommandInput(text: string): { code: string; isExcluded: boolean } | undefined {
-	const trimmed = text.trimStart();
-	const prefixLength = pythonCommandPrefixLength(trimmed);
-	if (prefixLength === 0) return undefined;
-	const code = trimmed.slice(prefixLength).trim();
-	if (prefixLength === 1 && looksLikePastedShellPrompt(code)) return undefined;
-	return {
-		code,
-		isExcluded: prefixLength === 2,
-	};
-}
 
 /** Wrap pasted text in `<attachment>` tags so the model treats it as one quoted block. */
 function wrapPasteInAttachmentBlock(content: string): string {
@@ -537,7 +503,8 @@ export class InputController {
 			const wasPythonMode = this.ctx.isPythonMode;
 			const trimmed = text.trimStart();
 			this.ctx.isBashMode = trimmed.startsWith("!");
-			this.ctx.isPythonMode = parsePythonCommandInput(trimmed) !== undefined;
+			this.ctx.isPythonMode =
+				parseReplEvalInput(trimmed, this.ctx.session.extensionRunner?.getEvalBackendAliases()) !== undefined;
 			if (wasBashMode !== this.ctx.isBashMode || wasPythonMode !== this.ctx.isPythonMode) {
 				this.ctx.updateEditorBorderColor();
 			}
@@ -719,7 +686,10 @@ export class InputController {
 					this.ctx.editor.setText("");
 					return;
 				}
-				if (text.startsWith("!") || parsePythonCommandInput(text)) {
+				if (
+					text.startsWith("!") ||
+					parseReplEvalInput(text, this.ctx.session.extensionRunner?.getEvalBackendAliases())
+				) {
 					this.ctx.showStatus("Local execution is host-only during a collab session");
 					this.ctx.editor.setText("");
 					return;
@@ -770,23 +740,26 @@ export class InputController {
 				}
 			}
 
-			// Handle python command (`$ <code>` for normal, `$$ <code>` for excluded from context).
-			// Shell-style variables such as `$HOME` are normal prose unless a space follows the sigil.
-			const pythonCommand = parsePythonCommandInput(text);
-			if (pythonCommand) {
-				const { code, isExcluded } = pythonCommand;
-				if (code) {
-					if (this.ctx.session.isEvalRunning) {
-						this.ctx.showWarning("A Python execution is already running. Press Esc to cancel it first.");
-						this.ctx.editor.setText(text);
-						return;
-					}
-					this.ctx.editor.addToHistory(text);
-					await this.ctx.handlePythonCommand(code, isExcluded);
-					this.ctx.isPythonMode = false;
-					this.ctx.updateEditorBorderColor();
+			// Handle generic user eval commands for built-ins and registered aliases.
+			const evalCommand = parseReplEvalInput(text, runner?.getEvalBackendAliases());
+			if (evalCommand) {
+				if (this.ctx.session.isEvalRunning) {
+					this.ctx.showWarning("An eval execution is already running. Press Esc to cancel it first.");
+					this.ctx.editor.setText(text);
 					return;
 				}
+				this.ctx.editor.addToHistory(text);
+				this.ctx.editor.clearDraft();
+				await this.ctx.handleEvalCommand(
+					evalCommand.language,
+					evalCommand.code,
+					evalCommand.excludeFromContext,
+					evalCommand.reset,
+					evalCommand.alias,
+				);
+				this.ctx.isPythonMode = false;
+				this.ctx.updateEditorBorderColor();
+				return;
 			}
 
 			// While loop mode is on, every user-typed prompt becomes the new loop
@@ -961,7 +934,12 @@ export class InputController {
 			}
 			return;
 		}
-		if (text && (text.startsWith("/") || text.startsWith("!") || parsePythonCommandInput(text))) {
+		if (
+			text &&
+			(text.startsWith("/") ||
+				text.startsWith("!") ||
+				parseReplEvalInput(text, this.ctx.session.extensionRunner?.getEvalBackendAliases()))
+		) {
 			this.ctx.showStatus("Commands run in the main session — press ←← to return first");
 			return; // editor text not cleared: Editor does not auto-clear on submit
 		}
