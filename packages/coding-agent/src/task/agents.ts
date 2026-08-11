@@ -24,6 +24,7 @@ interface AgentFrontmatter {
 	tools?: string[];
 	spawns?: string;
 	model?: string | string[];
+	harness?: "omp" | "claude" | "codex";
 	thinkingLevel?: string;
 	blocking?: boolean;
 	prewalk?: boolean | string;

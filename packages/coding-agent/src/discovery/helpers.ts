@@ -238,6 +238,8 @@ export interface ParsedAgentFields {
 	tools?: string[];
 	spawns?: string[] | "*";
 	model?: string[];
+	/** Runtime harness selected for this agent; omitted frontmatter normalizes to `omp`. */
+	harness?: "omp" | "claude" | "codex";
 	output?: unknown;
 	thinkingLevel?: ConfiguredThinkingLevel;
 	autoloadSkills?: string[];
@@ -256,6 +258,14 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 	const description = typeof frontmatter.description === "string" ? frontmatter.description : undefined;
 
 	if (!name || !description) {
+		return null;
+	}
+
+	const rawHarness = frontmatter.harness;
+	let harness: ParsedAgentFields["harness"] = "omp";
+	if (rawHarness === "omp" || rawHarness === "claude" || rawHarness === "codex") {
+		harness = rawHarness;
+	} else if (rawHarness !== undefined) {
 		return null;
 	}
 
@@ -313,6 +323,7 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 		description,
 		tools,
 		spawns,
+		harness,
 		model,
 		output,
 		thinkingLevel,

@@ -355,11 +355,20 @@ export interface ReviewData {
 	summary?: ReviewSummary;
 }
 
+/** Immutable metadata copied when a future child session is created. */
+export interface ParentSessionMetadata {
+	readonly parentSessionId: string;
+	readonly inheritedExtensionState: Readonly<Record<string, unknown>>;
+}
+
+
 /** Agent definition (bundled or discovered) */
 export interface AgentDefinition {
 	name: string;
 	description: string;
 	systemPrompt: string;
+	/** Runtime harness selected for this agent; omitted frontmatter normalizes to `omp`. */
+	harness?: "omp" | "claude" | "codex";
 	tools?: string[];
 	spawns?: string[] | "*";
 	model?: string[];
