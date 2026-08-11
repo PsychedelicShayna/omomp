@@ -17,6 +17,7 @@ import type {
 	CustomMessage,
 	FileMentionMessage,
 	HookMessage,
+	EvalExecutionMessage,
 	PythonExecutionMessage,
 } from "./messages";
 
@@ -223,9 +224,9 @@ function toolCallLine(
  *  through `toolCall`), so the `user-` prefix makes provenance explicit for the
  *  advisor and history readers regardless of render mode. */
 function executionLine(
-	kind: "bash" | "python",
+	kind: string,
 	source: string,
-	msg: BashExecutionMessage | PythonExecutionMessage,
+	msg: BashExecutionMessage | EvalExecutionMessage | PythonExecutionMessage,
 ): string {
 	const status = msg.cancelled
 		? "cancelled"
@@ -392,6 +393,18 @@ export function formatSessionHistoryMarkdown(messages: unknown[], opts?: History
 					pushWatchedRole("**user**:", bashLine);
 				} else {
 					lines.push(bashLine, "");
+					lastWatchedLabel = undefined;
+				}
+				break;
+			}
+			case "evalExecution": {
+				const evalMsg = msg as EvalExecutionMessage;
+				if (evalMsg.excludeFromContext) break;
+				const evalLine = executionLine(evalMsg.language, evalMsg.code, evalMsg);
+				if (opts?.watchedRoles) {
+					pushWatchedRole("**user**:", evalLine);
+				} else {
+					lines.push(evalLine, "");
 					lastWatchedLabel = undefined;
 				}
 				break;

@@ -2099,7 +2099,7 @@ export class AcpAgent implements Agent {
 		}
 		if (
 			message.role === "bashExecution" ||
-			message.role === "pythonExecution" ||
+			message.role === "evalExecution" ||
 			message.role === "compactionSummary"
 		) {
 			return this.#wrapReplayContent(
