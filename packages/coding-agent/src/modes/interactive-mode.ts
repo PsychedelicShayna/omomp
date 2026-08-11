@@ -4665,6 +4665,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#commandController.handleBashCommand(command, excludeFromContext);
 	}
 
+	handleEvalCommand(
+		language: string,
+		code: string,
+		excludeFromContext?: boolean,
+		reset?: boolean,
+		alias?: string,
+	): Promise<void> {
+		return this.#commandController.handleEvalCommand(language, code, excludeFromContext, reset, alias);
+	}
+
 	handlePythonCommand(code: string, excludeFromContext?: boolean): Promise<void> {
 		return this.#commandController.handlePythonCommand(code, excludeFromContext);
 	}

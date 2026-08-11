@@ -354,6 +354,13 @@ export interface InteractiveModeContext {
 	handleDropCommand(): Promise<void>;
 	handleForkCommand(): Promise<void>;
 	handleBashCommand(command: string, excludeFromContext?: boolean): Promise<void>;
+	handleEvalCommand(
+		language: string,
+		code: string,
+		excludeFromContext?: boolean,
+		reset?: boolean,
+		alias?: string,
+	): Promise<void>;
 	handlePythonCommand(code: string, excludeFromContext?: boolean): Promise<void>;
 	handleMCPCommand(text: string): Promise<void>;
 	handleSSHCommand(text: string): Promise<void>;
