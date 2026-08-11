@@ -2111,6 +2111,7 @@ export class AcpAgent implements Agent {
 		if (
 			message.role === "bashExecution" ||
 			message.role === "evalExecution" ||
+			message.role === "pythonExecution" ||
 			message.role === "compactionSummary"
 		) {
 			return this.#wrapReplayContent(
