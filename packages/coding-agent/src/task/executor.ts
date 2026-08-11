@@ -59,6 +59,7 @@ import { trackLateCleanup } from "../utils/late-cleanup";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { WorkspaceTree } from "../workspace-tree";
 import { generateTaskLabel } from "./label";
+import { getExternalHarnessAdapter } from "./external-harness";
 import { resolveAgentPrewalkDefault } from "./prewalk";
 import { isReadOnlyAgent } from "./read-only-policy";
 import { subprocessToolRegistry } from "./subprocess-tool-registry";
@@ -2092,6 +2093,7 @@ interface FinalizeRunArgs {
 	detached?: boolean;
 	sessionFile?: string;
 	startTime: number;
+	rawOutputOverride?: string;
 }
 
 /**
@@ -2107,7 +2109,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 	let stderr = done.error ?? "";
 
 	// Use final output if available, otherwise accumulated output
-	let rawOutput = monitor.rawOutput();
+	let rawOutput = args.rawOutputOverride ?? monitor.rawOutput();
 	const yieldItems = progress.extractedToolData?.yield as YieldItem[] | undefined;
 	// Breadcrumb the synchronous yield-payload shaping (O(rawOutput)) so a block
 	// here is attributed to this subagent rather than logged as "unknown".
@@ -2602,7 +2604,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		index,
 		id,
 		worktree,
-		modelOverride,
+		modelOverride: explicitModelOverride,
 		modelRole,
 		thinkingLevel,
 		outputSchema,
@@ -2610,6 +2612,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		signal,
 		onProgress,
 	} = options;
+	const providedSettings = options.settings;
+	const modelOverride =
+		explicitModelOverride ?? providedSettings?.get("task.agentModelOverrides")?.[agent.name];
 	const startTime = Date.now();
 	// Set by the session's onFirstChatDispatch hook the first time the agent
 	// loop dispatches a chat request to the provider — the launch-complete boundary.
@@ -2638,6 +2643,135 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			aborted: true,
 			abortReason: "Cancelled before start",
 		};
+	}
+
+	const externalAdapter = getExternalHarnessAdapter(agent.harness);
+	if (externalAdapter) {
+		const maxRuntimeMs = Math.max(
+			0,
+			Math.trunc(Number(options.maxRuntimeMs ?? providedSettings?.get("task.maxRuntimeMs") ?? 0) || 0),
+		);
+		const deadlineAt = maxRuntimeMs > 0 ? Date.now() + maxRuntimeMs : undefined;
+		const deadlineController = new AbortController();
+		const deadlineTimer =
+			deadlineAt === undefined
+				? undefined
+				: setTimeout(
+						() =>
+							deadlineController.abort(
+								`Subagent runtime limit exceeded (task.maxRuntimeMs=${maxRuntimeMs})`,
+							),
+						Math.max(0, deadlineAt - Date.now()),
+					);
+		deadlineTimer?.unref();
+		const externalSignal = signal
+			? AbortSignal.any([signal, deadlineController.signal])
+			: deadlineController.signal;
+		const monitor = createSubagentRunMonitor({
+			index,
+			id,
+			agent,
+			task,
+			assignment,
+			description: options.description,
+			modelRegistry: options.modelRegistry,
+			settings: providedSettings,
+			modelOverride,
+			signal: externalSignal,
+			onProgress,
+			softRequestBudget: 0,
+			softRequestBudgetNotice: false,
+			maxRuntimeMs,
+		});
+		const emitExternalLifecycle = (status: "started" | "completed" | "failed" | "aborted"): void => {
+			options.eventBus?.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+				id,
+				agent: agent.name,
+				parentToolCallId: options.parentToolCallId,
+				detached: options.detached,
+				agentSource: agent.source,
+				description: options.description,
+				status,
+				sessionFile: undefined,
+				index,
+			});
+		};
+		let externalTerminalEmitted = false;
+		emitExternalLifecycle("started");
+		try {
+			const result = await externalAdapter.execute({
+				agent,
+				agentId: id,
+				prompt: [options.context, task].filter(Boolean).join("\n\n"),
+				cwd: worktree ?? cwd,
+				isolation: {
+					isolated: worktree !== undefined,
+					worktree,
+					repoRoot: worktree === undefined ? undefined : cwd,
+				},
+				parent: {
+					parentSessionId: options.parentEvalSessionId ?? options.parentAgentId ?? "Main",
+					inheritedExtensionState: {
+						extensionPaths: options.preloadedExtensionPaths ?? [],
+						customToolPaths: options.preloadedCustomToolPaths ?? [],
+					},
+				},
+				signal: externalSignal,
+				maxRuntimeMs,
+				deadlineAt,
+				onProgress: progress => {
+					Object.assign(monitor.progress, progress);
+					monitor.scheduleProgress();
+				},
+			});
+			Object.assign(monitor.progress, {
+				tokens: result.tokens,
+				requests: result.requests,
+				contextTokens: result.contextTokens,
+				contextWindow: result.contextWindow,
+				resolvedModel: result.resolvedModel,
+				extractedToolData: result.extractedToolData,
+			});
+			const finalized = await finalizeRunResult({
+				monitor,
+				done: {
+					exitCode: result.exitCode,
+					error: result.error || result.stderr,
+					aborted: result.aborted,
+					abortReason: result.abortReason,
+					durationMs: result.durationMs,
+				},
+				index,
+				id,
+				agent,
+				task,
+				assignment,
+				modelOverride,
+				outputSchema,
+				outputSchemaMode: options.outputSchemaMode,
+				outputSchemaSource: options.outputSchemaSource,
+				signal: externalSignal,
+				artifactsDir: options.artifactsDir,
+				eventBus: undefined,
+				parentToolCallId: options.parentToolCallId,
+				detached: options.detached,
+				startTime,
+				rawOutputOverride: result.output,
+			});
+			emitExternalLifecycle(finalized.aborted ? "aborted" : finalized.exitCode === 0 ? "completed" : "failed");
+			externalTerminalEmitted = true;
+			return {
+				...finalized,
+				description: options.description,
+				usage: result.usage,
+			};
+		} catch (error) {
+			if (!externalTerminalEmitted) emitExternalLifecycle(externalSignal.aborted ? "aborted" : "failed");
+			throw error;
+		} finally {
+			if (deadlineTimer) clearTimeout(deadlineTimer);
+			monitor.finish();
+		}
 	}
 
 	// Set up artifact paths and write input file upfront if artifacts dir provided

@@ -23,6 +23,7 @@ import { buildOutputValidator } from "../tools/output-schema-validator";
 import { trackLateCleanup } from "../utils/late-cleanup";
 import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
 import { type ExecutorOptions, runSubprocess } from "./executor";
+import { assertExternalHarnessCapabilities } from "./external-harness";
 import {
 	applyEligibleNestedPatches,
 	type IsolationContext,
@@ -269,13 +270,23 @@ export async function resolveEffectiveSubagentPolicy(
 	}
 
 	const effectiveAgent = planMode ? createPlanModeAgent(agent) : agent;
+	try {
+		assertExternalHarnessCapabilities(effectiveAgent);
+	} catch (error) {
+		throw new StructuredSubagentError(
+			"preflight",
+			error instanceof Error ? error.message : String(error),
+			{ cause: error },
+		);
+	}
 	const schema = resolveSchema(request, effectiveAgent);
-	if (schema.source === "caller" || (schema.source !== "none" && schema.mode === "strict")) {
-		const { error } = buildOutputValidator(schema.schema);
-		if (error) {
-			const scope =
-				schema.source === "caller" ? (schema.mode === "strict" ? "strict caller" : "caller") : "strict effective";
-			throw new StructuredSubagentError("preflight", `Invalid ${scope} output schema: ${error}`);
+	if (schema.source !== "none") {
+		const { validator, error } = buildOutputValidator(schema.schema);
+		if (error || !validator) {
+			throw new StructuredSubagentError(
+				"preflight",
+				`Invalid ${schema.source} output schema: ${error ?? "schema does not produce a runtime validator"}`,
+			);
 		}
 	}
 	const agentModelOverrides = request.session.settings.get("task.agentModelOverrides");
@@ -526,18 +537,25 @@ function attachStructuredOutputMetadata(result: SingleResult, schema: Structured
 		return;
 	}
 	if (result.structuredOutput) return;
-	let fallbackData: unknown = result.output;
+	let data: unknown;
+	let parseError: string | undefined;
 	try {
-		fallbackData = JSON.parse(result.output);
-	} catch {}
-	const output: StructuredSubagentOutput = {
+		data = JSON.parse(result.output);
+	} catch (error) {
+		parseError = error instanceof Error ? error.message : String(error);
+	}
+	const { validator, error: schemaError } = buildOutputValidator(schema.schema);
+	const validation = validator && parseError === undefined ? validator.validate(data) : undefined;
+	const valid = result.exitCode === 0 && validation?.success === true;
+	result.structuredOutput = {
 		source: schema.source,
 		mode: schema.mode,
-		status: result.exitCode === 0 ? "valid" : "invalid",
-		data: fallbackData,
-		...(result.error ? { error: result.error } : {}),
+		status: valid ? "valid" : validator ? "invalid" : "unavailable",
+		...(parseError === undefined ? { data } : {}),
+		...(!valid
+			? { error: result.error ?? schemaError ?? parseError ?? "Output did not pass schema validation" }
+			: {}),
 	};
-	result.structuredOutput = output;
 }
 
 /**

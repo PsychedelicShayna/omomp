@@ -310,9 +310,7 @@ describe("structured subagent primitive", () => {
 
 		for (const schemaMode of ["permissive", "strict"] as const) {
 			await expect(runStructuredSubagent(request({ outputSchema: false, schemaMode }))).rejects.toThrow(
-				schemaMode === "strict"
-					? "Invalid strict caller output schema: boolean false schema rejects all outputs"
-					: "Invalid caller output schema: boolean false schema rejects all outputs",
+				"Invalid caller output schema: boolean false schema rejects all outputs",
 			);
 		}
 		expect(dispatch).not.toHaveBeenCalled();
@@ -333,20 +331,19 @@ describe("structured subagent primitive", () => {
 		await fs.rm(settled.artifactsDir, { recursive: true, force: true });
 	});
 
-	it("keeps invalid inherited schemas permissive but rejects them when session strict mode is inherited", async () => {
+	it("rejects invalid inherited schemas before dispatch in every mode", async () => {
 		const invalidAgent = { ...AGENT, output: false };
 		mockDiscovery(invalidAgent);
-		expect((await resolveEffectiveSubagentPolicy(request())).schema).toMatchObject({
-			source: "agent",
-			mode: "permissive",
-		});
+		await expect(resolveEffectiveSubagentPolicy(request())).rejects.toThrow(
+			"Invalid agent output schema: boolean false schema rejects all outputs",
+		);
 
 		const noAgentOutput = { ...AGENT, output: undefined };
 		mockDiscovery(noAgentOutput);
 		const strictSession = session({ outputSchema: false });
 		strictSession.outputSchemaMode = "strict";
 		await expect(resolveEffectiveSubagentPolicy(request({ session: strictSession }))).rejects.toThrow(
-			"Invalid strict effective output schema: boolean false schema rejects all outputs",
+			"Invalid session output schema: boolean false schema rejects all outputs",
 		);
 	});
 
