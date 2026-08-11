@@ -135,7 +135,11 @@ export class UiHelpers {
 	addMessageToChat(message: AgentMessage, options?: AddMessageOptions): Component[] {
 		switch (message.role) {
 			case "bashExecution": {
-				const component = new BashExecutionComponent(message.command, this.ctx.ui, message.excludeFromContext);
+				const component = new BashExecutionComponent(
+					message.command,
+					this.ctx.ui,
+					message.excludeFromContext ?? false,
+				);
 				if (message.output) {
 					component.appendOutput(message.output);
 				}
@@ -145,12 +149,18 @@ export class UiHelpers {
 				this.ctx.chatContainer.addChild(component);
 				break;
 			}
+			case "evalExecution":
 			case "pythonExecution": {
-				const component = new EvalExecutionComponent(message.code, this.ctx.ui, message.excludeFromContext);
+				const component = new EvalExecutionComponent(
+					message.code,
+					this.ctx.ui,
+					message.excludeFromContext ?? false,
+					message.role === "evalExecution" ? message.language : "py",
+				);
 				if (message.output) {
 					component.appendOutput(message.output);
 				}
-				component.setComplete(message.exitCode, message.cancelled, {
+				component.setComplete(message.exitCode, message.cancelled ?? false, {
 					truncation: message.meta?.truncation,
 				});
 				this.ctx.chatContainer.addChild(component);

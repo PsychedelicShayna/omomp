@@ -2099,7 +2099,7 @@ export class AcpAgent implements Agent {
 		}
 		if (
 			message.role === "bashExecution" ||
-			message.role === "pythonExecution" ||
+			message.role === "evalExecution" ||
 			message.role === "compactionSummary"
 		) {
 			return this.#wrapReplayContent(
@@ -2404,6 +2404,8 @@ export class AcpAgent implements Agent {
 				reload: async () => {
 					await record.session.reload();
 				},
+				applyRuntimeModelLoadout: loadout => record.session.applyRuntimeModelLoadout(loadout),
+				invalidatePromptCache: () => record.session.invalidatePromptCache(),
 				compact: instructionsOrOptions => runExtensionCompact(record.session, instructionsOrOptions),
 			},
 			uiContext,

@@ -126,6 +126,7 @@ describe("input controller — slash command history (#3148)", () => {
 			value: {
 				getCommand: (name: string) => (name === "id" ? { name } : undefined),
 				hasHandlers: () => false,
+				getEvalBackendAliases: () => [],
 			},
 		});
 		const image: ImageContent = { type: "image", data: "image-data", mimeType: "image/png" };

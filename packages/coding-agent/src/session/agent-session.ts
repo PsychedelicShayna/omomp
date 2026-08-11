@@ -104,11 +104,12 @@ import type { ModelRegistry } from "../config/model-registry";
 import { type ResolvedModelRoleValue, resolveModelOverride } from "../config/model-resolver";
 import { expandPromptTemplate, type PromptTemplate } from "../config/prompt-templates";
 import { buildServiceTierByFamily } from "../config/service-tier";
-import type { Settings, SkillsSettings } from "../config/settings";
+import { Settings, type SkillsSettings } from "../config/settings";
 import { onAppendOnlyModeChanged, onModelRolesChanged } from "../config/settings";
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
 import { getFileSnapshotStore } from "../edit/file-snapshot-store";
 import type { PythonResult } from "../eval/py/executor";
+import type { ExecutorBackendResult } from "../eval/backend";
 import type { BashResult } from "../exec/bash-executor";
 import type { TtsrManager } from "../export/ttsr";
 import type { LoadedCustomCommand } from "../extensibility/custom-commands";
@@ -134,7 +135,7 @@ import type {
 import { emitSessionShutdownEvent } from "../extensibility/extensions";
 import { ManagedTimers } from "../extensibility/extensions/managed-timers";
 import { createExtensionModelQuery } from "../extensibility/extensions/model-api";
-import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
+import type { CompactOptions, ContextUsage, RuntimeModelLoadout } from "../extensibility/extensions/types";
 import type { HookCommandContext } from "../extensibility/hooks/types";
 import type { Skill, SkillWarning } from "../extensibility/skills";
 import { expandSlashCommand, type FileSlashCommand } from "../extensibility/slash-commands";
@@ -200,6 +201,7 @@ import {
 } from "../tools/resolve";
 import type { TodoPhase } from "../tools/todo";
 import { ToolError } from "../tools/tool-errors";
+import type { ToolSession } from "../tools";
 import { parseCommandArgs } from "../utils/command-args";
 import type { EditMode } from "../utils/edit-mode";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
@@ -288,6 +290,7 @@ import {
 	dedupeEphemeralReply,
 	demoteInterruptedThinking,
 	didSessionMessagesChange,
+	type EvalExecutionMessage,
 	type FileMentionMessage,
 	type HookMessage,
 	INTERRUPTED_THINKING_MESSAGE_TYPE,
@@ -919,6 +922,16 @@ export class AgentSession {
 			extensionRunner: () => this.#extensionRunner,
 			isStreaming: () => this.isStreaming,
 		};
+		const evalToolSession: ToolSession = config.toolSession ?? {
+			get cwd() { return config.sessionManager.getCwd(); },
+			get additionalDirectories() { return config.sessionManager.getAdditionalDirectories(); },
+			hasUI: false,
+			getSessionFile: () => config.sessionManager.getSessionFile() ?? null,
+			getSessionId: () => config.sessionManager.getSessionId?.() ?? null,
+			getSessionSpawns: () => "*",
+			modelRegistry: config.modelRegistry,
+			settings: config.settings,
+		};
 		this.#bash = new BashRunner(bashHost);
 		// Power assertions are taken per turn (see #beginInFlight); nothing acquired here.
 		const evalHost: EvalRunnerHost = {
@@ -927,6 +940,7 @@ export class AgentSession {
 			settings: this.settings,
 			extensionRunner: () => this.#extensionRunner,
 			isStreaming: () => this.isStreaming,
+			toolSession: () => evalToolSession,
 			appendSessionMessage: message => {
 				this.agent.appendMessage(message);
 				this.sessionManager.appendMessage(message);
@@ -2164,6 +2178,7 @@ export class AgentSession {
 			| CustomMessage
 			| HookMessage
 			| BashExecutionMessage
+			| EvalExecutionMessage
 			| PythonExecutionMessage
 			| FileMentionMessage,
 	): string {
@@ -5473,6 +5488,8 @@ export class AgentSession {
 			reload: async () => {
 				await this.reload();
 			},
+			applyRuntimeModelLoadout: loadout => this.applyRuntimeModelLoadout(loadout),
+			invalidatePromptCache: () => this.invalidatePromptCache(),
 			getSystemPrompt: () => this.systemPrompt,
 			setInterval: (callback, ms, ...args) => this.#fallbackTimers().setInterval(callback, ms, ...args),
 			setTimeout: (callback, ms, ...args) => this.#fallbackTimers().setTimeout(callback, ms, ...args),
@@ -5661,7 +5678,7 @@ export class AgentSession {
 		// A queued steer resumes from ANY tail: Agent.continue() runs #runLoop(undefined),
 		// whose initial steering poll injects the steer before the first provider call, so the
 		// request tail becomes the steer (valid) regardless of any injected custom / bashExecution
-		// / pythonExecution record a user interrupt left as the literal transcript tail. This is
+		// / evalExecution record a user interrupt left as the literal transcript tail. This is
 		// why a queued user steer stranded behind a preserved advisor card (or a flushed IRC aside
 		// / eval execution record) still resumes — no tail-role enumeration needed.
 		if (this.agent.peekSteeringQueue().length > 0) return true;
@@ -6489,6 +6506,76 @@ export class AgentSession {
 	// Model Management
 	// =========================================================================
 
+	/** Apply or clear the session's volatile model loadout as one idle-only transition. */
+	async applyRuntimeModelLoadout(loadout: RuntimeModelLoadout | undefined): Promise<void> {
+		if (this.isStreaming) throw new AgentBusyError();
+
+		let targetModel = this.model;
+		if (loadout) {
+			const candidateSettings = Settings.isolated({
+				modelRoles: loadout.modelRoles,
+				"retry.fallbackChains": loadout.retryFallbackChains,
+				"task.agentModelOverrides": loadout.taskAgentModelOverrides,
+			});
+			const selectors = [
+				loadout.mainModel,
+				...Object.values(loadout.modelRoles),
+				...Object.values(loadout.retryFallbackChains).flat(),
+				...Object.values(loadout.taskAgentModelOverrides),
+			];
+			for (const selector of selectors) {
+				const resolved = resolveModelOverride([selector], this.#modelRegistry, candidateSettings);
+				if (!resolved.model) throw new Error(`Runtime loadout contains an unresolved model selector: ${selector}`);
+			}
+			targetModel = resolveModelOverride([loadout.mainModel], this.#modelRegistry, candidateSettings).model;
+			if (!targetModel) throw new Error(`Runtime loadout main model did not resolve: ${loadout.mainModel}`);
+		}
+
+		const previousOverrides = this.settings.getRuntimeModelOverrides();
+		const previousModel = this.model;
+		const previousPromptCacheKey = this.agent.promptCacheKey;
+		const previousInheritedPromptCacheKey = this.#inheritedProviderPromptCacheKey;
+		try {
+			this.settings.applyRuntimeOverridesAtomically(
+				loadout
+					? {
+							modelRoles: loadout.modelRoles,
+							retryFallbackChains: loadout.retryFallbackChains,
+							taskAgentModelOverrides: loadout.taskAgentModelOverrides,
+						}
+					: undefined,
+			);
+			if (!loadout) {
+				const restoredDefault = this.settings.getModelRole("default");
+				if (restoredDefault) {
+					targetModel = resolveModelOverride([restoredDefault], this.#modelRegistry, this.settings).model;
+					if (!targetModel) {
+						throw new Error(`Restored default model did not resolve: ${restoredDefault}`);
+					}
+				}
+			}
+			if (targetModel && (!previousModel || !modelsAreEqual(previousModel, targetModel))) {
+				await this.#setModelWithProviderSessionReset(targetModel);
+			}
+			this.invalidatePromptCache();
+		} catch (error) {
+			this.settings.applyRuntimeOverridesAtomically(previousOverrides);
+			if (previousModel && (!this.model || !modelsAreEqual(this.model, previousModel))) {
+				await this.#setModelWithProviderSessionReset(previousModel);
+			}
+			this.agent.promptCacheKey = previousPromptCacheKey;
+			this.#inheritedProviderPromptCacheKey = previousInheritedPromptCacheKey;
+			throw error;
+		}
+	}
+
+	/** Replace provider prompt-cache identity before the next request. */
+	invalidatePromptCache(): void {
+		if (this.isStreaming) throw new AgentBusyError();
+		this.#inheritedProviderPromptCacheKey = undefined;
+		this.agent.promptCacheKey = Bun.randomUUIDv7();
+	}
+
 	/**
 	 * Set model directly.
 	 * Validates that a credential source is configured (synchronously, without
@@ -7079,12 +7166,34 @@ export class AgentSession {
 	 * @param onChunk Optional streaming callback for output
 	 * @param options.excludeFromContext If true, execution won't be sent to LLM ($$ prefix)
 	 */
-	executePython(
+	executeEval(
+		language: string,
+		code: string,
+		onChunk?: (chunk: string) => void,
+		options?: { excludeFromContext?: boolean; reset?: boolean; alias?: string },
+	): Promise<ExecutorBackendResult> {
+		return this.#eval.execute(language, code, onChunk, options);
+	}
+
+	async executePython(
 		code: string,
 		onChunk?: (chunk: string) => void,
 		options?: { excludeFromContext?: boolean },
 	): Promise<PythonResult> {
-		return this.#eval.executePython(code, onChunk, options);
+		const result = await this.executeEval("py", code, onChunk, options);
+		return {
+			output: result.output,
+			exitCode: result.exitCode,
+			cancelled: result.cancelled,
+			truncated: result.truncated,
+			artifactId: result.artifactId,
+			totalLines: result.totalLines,
+			totalBytes: result.totalBytes,
+			outputLines: result.outputLines,
+			outputBytes: result.outputBytes,
+			displayOutputs: result.displayOutputs,
+			stdinRequested: false,
+		};
 	}
 
 	assertEvalExecutionAllowed(): void {
@@ -7102,7 +7211,23 @@ export class AgentSession {
 	 * Record a Python execution result in session history.
 	 */
 	recordPythonResult(code: string, result: PythonResult, options?: { excludeFromContext?: boolean }): void {
-		this.#eval.recordPythonResult(code, result, options);
+		this.#eval.recordResult(
+			"py",
+			code,
+			{
+				output: result.output,
+				exitCode: result.exitCode,
+				cancelled: result.cancelled,
+				truncated: result.truncated,
+				artifactId: result.artifactId,
+				totalLines: result.totalLines,
+				totalBytes: result.totalBytes,
+				outputLines: result.outputLines,
+				outputBytes: result.outputBytes,
+				displayOutputs: result.displayOutputs,
+			},
+			options,
+		);
 	}
 
 	/**

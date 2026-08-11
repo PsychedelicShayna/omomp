@@ -17,6 +17,7 @@ import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import type { MemoryRuntimeContext } from "../../memory-backend";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { AsyncJobSnapshot } from "../../session/agent-session";
+import { type EvalBackendRegistry, evalBackendRegistry } from "../../session/eval-service";
 import type { SessionManager } from "../../session/session-manager";
 import type { BranchHandler, NavigateTreeHandler, NewSessionHandler } from "../session-handler-types";
 import { ManagedTimers } from "./managed-timers";
@@ -40,6 +41,7 @@ import type {
 	ExtensionContextActions,
 	ExtensionError,
 	ExtensionEvent,
+	ExtensionEvalBackend,
 	ExtensionFlag,
 	ExtensionRuntime,
 	ExtensionShortcut,
@@ -66,8 +68,8 @@ import type {
 	ToolResultEventResult,
 	UserBashEvent,
 	UserBashEventResult,
-	UserPythonEvent,
-	UserPythonEventResult,
+	UserEvalEvent,
+	UserEvalEventResult,
 } from "./types";
 
 /** Combined result from all before_agent_start handlers */
@@ -240,9 +242,8 @@ const MAX_PENDING_MCP_NOTIFICATIONS = 100;
  */
 type RunnerEmitEvent = Exclude<
 	ExtensionEvent,
-	| ToolCallEvent
-	| ToolResultEvent
 	| UserBashEvent
+	| UserEvalEvent
 	| ContextEvent
 	| BeforeProviderRequestEvent
 	| AfterProviderResponseEvent
@@ -299,6 +300,7 @@ export async function emitSessionShutdownEvent(extensionRunner: ExtensionRunner 
 		});
 		return true;
 	} finally {
+		await extensionRunner.disposeEvalBackends();
 		extensionRunner.clearManagedTimers();
 	}
 }
@@ -349,6 +351,12 @@ export class ExtensionRunner {
 	#navigateTreeHandler: NavigateTreeHandler = async () => ({ cancelled: false });
 	#switchSessionHandler: SwitchSessionHandler = async () => ({ cancelled: false });
 	#reloadHandler: () => Promise<void> = async () => {};
+	#applyRuntimeModelLoadoutHandler: ExtensionCommandContextActions["applyRuntimeModelLoadout"] = async () => {
+		throw new Error("Runtime model loadouts are unavailable before the extension runner is initialized");
+	};
+	#invalidatePromptCacheHandler: ExtensionCommandContextActions["invalidatePromptCache"] = () => {
+		throw new Error("Prompt-cache invalidation is unavailable before the extension runner is initialized");
+	};
 	#shutdownHandler: ShutdownHandler = () => {};
 	#getMemoryFn?: () => MemoryRuntimeContext | undefined;
 	#commandDiagnostics: Array<{ type: string; message: string; path: string }> = [];
@@ -398,6 +406,25 @@ export class ExtensionRunner {
 	 * accumulate for the session's lifetime.
 	 */
 	#emittedToolCalls = new Set<string>();
+	readonly #evalBackends: EvalBackendRegistry;
+
+	/** Register one extension eval backend into this session's validated registry. */
+	registerEvalBackend(backend: ExtensionEvalBackend): void {
+		this.#evalBackends.register(backend);
+	}
+
+	/** Resolve an id or alias registered for this session. */
+	getEvalBackend(token: string): ExtensionEvalBackend | undefined {
+		return this.#evalBackends.resolve(token);
+	}
+
+	getEvalBackendAliases(): readonly string[] {
+		return this.#evalBackends.aliases();
+	}
+
+	async disposeEvalBackends(): Promise<void> {
+		await this.#evalBackends.dispose();
+	}
 
 	/** Records that the loop already emitted `tool_call` for this dispatch. */
 	markToolCallEmitted(toolCallId: string, toolName: string): void {
@@ -486,7 +513,12 @@ export class ExtensionRunner {
 		private readonly localProtocolOptions?: LocalProtocolOptions,
 		getAsyncJobSnapshot?: () => AsyncJobSnapshot | null,
 	) {
+		this.#evalBackends = evalBackendRegistry(sessionManager);
 		this.#uiContext = noOpUIContext;
+		for (const backend of this.runtime.pendingEvalBackendRegistrations?.splice(0) ?? []) {
+			this.registerEvalBackend(backend);
+		}
+		this.runtime.registerEvalBackend = backend => this.registerEvalBackend(backend);
 		this.#getMemoryFn = getMemory;
 		this.#getAsyncJobSnapshotFn = getAsyncJobSnapshot ?? (() => null);
 	}
@@ -530,6 +562,7 @@ export class ExtensionRunner {
 		this.runtime.setServiceTier = actions.setServiceTier ?? throwUnsupportedServiceTierAction;
 		this.runtime.getSessionName = actions.getSessionName;
 		this.runtime.setSessionName = actions.setSessionName;
+		this.runtime.registerEvalBackend = backend => this.registerEvalBackend(backend);
 
 		// Context actions (required)
 		this.#getModel = contextActions.getModel;
@@ -549,6 +582,8 @@ export class ExtensionRunner {
 			this.#reloadHandler = commandContextActions.reload;
 			this.#getContextUsageFn = commandContextActions.getContextUsage;
 			this.#compactFn = commandContextActions.compact;
+			this.#applyRuntimeModelLoadoutHandler = commandContextActions.applyRuntimeModelLoadout;
+			this.#invalidatePromptCacheHandler = commandContextActions.invalidatePromptCache;
 		}
 
 		this.#uiContext = uiContext ?? noOpUIContext;
@@ -902,6 +937,8 @@ export class ExtensionRunner {
 			switchSession: sessionPath => this.#switchSessionHandler(sessionPath),
 			reload: () => this.#reloadHandler(),
 			compact: instructionsOrOptions => this.#compactFn(instructionsOrOptions),
+			applyRuntimeModelLoadout: loadout => this.#applyRuntimeModelLoadoutHandler(loadout),
+			invalidatePromptCache: () => this.#invalidatePromptCacheHandler(),
 		};
 	}
 
@@ -1145,13 +1182,13 @@ export class ExtensionRunner {
 		return this.emitUserEvent<UserBashEventResult>(event, "user_bash");
 	}
 
-	async emitUserPython(event: UserPythonEvent): Promise<UserPythonEventResult | undefined> {
-		return this.emitUserEvent<UserPythonEventResult>(event, "user_python");
+	async emitUserEval(event: UserEvalEvent): Promise<UserEvalEventResult | undefined> {
+		return this.emitUserEvent<UserEvalEventResult>(event, "user_eval");
 	}
 
 	private async emitUserEvent<R>(
-		event: UserBashEvent | UserPythonEvent,
-		eventName: "user_bash" | "user_python",
+		event: UserBashEvent | UserEvalEvent,
+		eventName: "user_bash" | "user_eval",
 	): Promise<R | undefined> {
 		const ctx = this.createContext();
 
@@ -1167,12 +1204,9 @@ export class ExtensionRunner {
 					ext,
 					extensionHandlerTimeoutMs,
 				);
-				if (handlerResult) {
-					return handlerResult as R;
-				}
+				if (handlerResult) return handlerResult as R;
 			}
 		}
-
 		return undefined;
 	}
 

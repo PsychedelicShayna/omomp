@@ -401,7 +401,7 @@ function tObject<const P extends Record<string, AnySchema>>(properties: P, opts?
 	for (const key in properties) {
 		const schema = properties[key];
 		const inner = asRuntime<unknown>(schema)[OPTIONAL_INNER];
-		def[inner ? `${key}?` : key] = inner ?? schema;
+		def[inner ? `${key}?` : key] = schema;
 		props[key] = schema;
 	}
 	if (opts?.additionalProperties === false) def["+"] = "reject";

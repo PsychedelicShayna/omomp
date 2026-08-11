@@ -1215,9 +1215,15 @@ export class CommandController {
 		await this.#moveInteractiveCwd(resolvedPath);
 	}
 
-	async handlePythonCommand(code: string, excludeFromContext = false): Promise<void> {
+	async handleEvalCommand(
+		language: string,
+		code: string,
+		excludeFromContext = false,
+		reset = false,
+		alias = language,
+	): Promise<void> {
 		const isDeferred = this.ctx.session.isStreaming;
-		this.ctx.pythonComponent = new EvalExecutionComponent(code, this.ctx.ui, excludeFromContext);
+		this.ctx.pythonComponent = new EvalExecutionComponent(code, this.ctx.ui, excludeFromContext, language);
 
 		if (isDeferred) {
 			this.ctx.pendingMessagesContainer.addChild(this.ctx.pythonComponent);
@@ -1228,14 +1234,15 @@ export class CommandController {
 		this.ctx.ui.requestRender();
 
 		try {
-			const result = await this.ctx.session.executePython(
+			const result = await this.ctx.session.executeEval(
+				language,
 				code,
 				chunk => {
 					if (this.ctx.pythonComponent) {
 						this.ctx.pythonComponent.appendOutput(chunk);
 					}
 				},
-				{ excludeFromContext },
+				{ excludeFromContext, reset, alias },
 			);
 
 			if (this.ctx.pythonComponent) {
@@ -1249,11 +1256,15 @@ export class CommandController {
 			if (this.ctx.pythonComponent) {
 				this.ctx.pythonComponent.setComplete(undefined, false);
 			}
-			this.ctx.showError(`Python execution failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+			this.ctx.showError(`Eval execution failed: ${error instanceof Error ? error.message : "Unknown error"}`);
 		}
 
 		this.ctx.pythonComponent = undefined;
 		this.ctx.ui.requestRender();
+	}
+
+	handlePythonCommand(code: string, excludeFromContext = false): Promise<void> {
+		return this.handleEvalCommand("py", code, excludeFromContext);
 	}
 
 	async handleCompactCommand(

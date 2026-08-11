@@ -1,38 +1,44 @@
 import type { Agent } from "@oh-my-pi/pi-agent-core";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
+import { jsBackend, juliaBackend, pythonBackend, rubyBackend } from "../eval";
+import type { ExecutorBackend, ExecutorBackendResult } from "../eval/backend";
 import { disposeJuliaKernelSessionsByOwner } from "../eval/jl/executor";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
-import { namespaceSessionId as namespacePythonSessionId } from "../eval/py";
-import {
-	disposeKernelSessionsByOwner,
-	executePython as executePythonCommand,
-	type PythonResult,
-} from "../eval/py/executor";
+import { disposeKernelSessionsByOwner } from "../eval/py/executor";
 import { disposeRubyKernelSessionsByOwner } from "../eval/rb/executor";
 import { defaultEvalSessionId } from "../eval/session-id";
 import type { ExtensionRunner } from "../extensibility/extensions";
+import type { ToolSession } from "../tools";
 import { outputMeta } from "../tools/output-meta";
-import type { PythonExecutionMessage } from "./messages";
+import { evalBackendRegistry, extensionBackendAdapter, invokeEvalCell } from "./eval-service";
+import type { EvalExecutionMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
 
-/** Capabilities the eval runner borrows from its owning session. */
 export interface EvalRunnerHost {
 	agent: Agent;
 	sessionManager: SessionManager;
 	settings: Settings;
 	extensionRunner(): ExtensionRunner | undefined;
+	toolSession(): ToolSession;
 	isStreaming(): boolean;
-	appendSessionMessage(message: PythonExecutionMessage): void;
+	appendSessionMessage(message: EvalExecutionMessage): void;
 }
 
-/** Owns user-initiated Python execution and retained eval-kernel lifecycle. */
+export interface UserEvalOptions {
+	excludeFromContext?: boolean;
+	reset?: boolean;
+	/** Prefix alias selected by the user; defaults to the resolved language token. */
+	alias?: string;
+}
+
+/** Owns user-initiated generic eval execution and retained backend lifecycle. */
 export class EvalRunner {
-	readonly #host: EvalRunnerHost;
 	readonly #kernelOwnerId: string;
 	readonly #parentSessionId: string | undefined;
+	readonly #host: EvalRunnerHost;
 	#abortControllers = new Set<AbortController>();
-	#pendingMessages: PythonExecutionMessage[] = [];
+	#pendingMessages: EvalExecutionMessage[] = [];
 	#activeExecutions = new Set<Promise<unknown>>();
 	#disposing = false;
 
@@ -42,116 +48,119 @@ export class EvalRunner {
 		this.#parentSessionId = options.parentSessionId;
 	}
 
-	/** Executes Python in the session's shared kernel. */
-	async executePython(
+	async execute(
+		language: string,
 		code: string,
 		onChunk?: (chunk: string) => void,
-		options?: { excludeFromContext?: boolean },
-	): Promise<PythonResult> {
+		options?: UserEvalOptions,
+	): Promise<ExecutorBackendResult> {
 		const excludeFromContext = options?.excludeFromContext === true;
 		const cwd = this.#host.sessionManager.getCwd();
 		this.assertExecutionAllowed();
 		const abortController = new AbortController();
-		const execution = (async (): Promise<PythonResult> => {
+		const execution = (async () => {
 			const extensionRunner = this.#host.extensionRunner();
-			if (extensionRunner?.hasHandlers("user_python")) {
-				const hookResult = await extensionRunner.emitUserPython({
-					type: "user_python",
+			if (extensionRunner?.hasHandlers("user_eval")) {
+				const hookResult = await extensionRunner.emitUserEval({
+					type: "user_eval",
+					language,
+					alias: options?.alias ?? language,
 					code,
 					excludeFromContext,
 					cwd,
 				});
 				this.assertExecutionAllowed();
 				if (hookResult?.result) {
-					this.recordPythonResult(code, hookResult.result, options);
+					this.recordResult(language, code, hookResult.result, options);
 					return hookResult.result;
 				}
 			}
+
+			const session = this.#host.toolSession();
+			const backend = await this.#resolveBackend(language, session);
 			const sessionId =
 				this.getSessionId() ??
-				defaultEvalSessionId({
-					cwd,
-					getSessionFile: () => this.#host.sessionManager.getSessionFile() ?? null,
-				});
-			const result = await executePythonCommand(code, {
+				defaultEvalSessionId({ cwd, getSessionFile: () => this.#host.sessionManager.getSessionFile() ?? null });
+			const result = await invokeEvalCell(backend, code, {
 				cwd,
-				sessionId: namespacePythonSessionId(sessionId),
+				sessionId,
+				sessionFile: this.#host.sessionManager.getSessionFile() ?? undefined,
 				kernelOwnerId: this.#kernelOwnerId,
-				kernelMode: this.#host.settings.get("python.kernelMode"),
-				interpreter: this.#host.settings.get("python.interpreter")?.trim() || undefined,
-				onChunk,
 				signal: abortController.signal,
+				session,
+				reset: options?.reset === true,
+				onChunk: onChunk ?? (() => {}),
 			});
-			this.recordPythonResult(code, result, options);
+			this.recordResult(backend.id, code, result, options);
 			return result;
 		})();
 		return await this.trackExecution(execution, abortController);
 	}
 
-	/** Rejects new eval work once session disposal begins. */
-	assertExecutionAllowed(): void {
-		if (this.#disposing) throw new Error("Python execution is unavailable while session disposal is in progress");
+	/** Compatibility caller surface; new user-input routing calls execute("py", ...). */
+	executePython(code: string, onChunk?: (chunk: string) => void, options?: UserEvalOptions): Promise<ExecutorBackendResult> {
+		return this.execute("py", code, onChunk, options);
 	}
 
-	/** Tracks externally started Python work so disposal can await and abort it. */
+	async #resolveBackend(token: string, session: ToolSession): Promise<ExecutorBackend> {
+		const builtin: Record<string, ExecutorBackend> = {
+			py: pythonBackend,
+			python: pythonBackend,
+			js: jsBackend,
+			javascript: jsBackend,
+			rb: rubyBackend,
+			ruby: rubyBackend,
+			jl: juliaBackend,
+			julia: juliaBackend,
+		};
+		const backend = builtin[token] ?? (() => {
+			const registered = evalBackendRegistry(this.#host.sessionManager).resolve(token);
+			return registered ? extensionBackendAdapter(registered) : undefined;
+		})();
+		if (!backend) throw new Error(`Unknown eval backend: ${token}`);
+		if (!(await backend.isAvailable(session))) throw new Error(`Eval backend "${token}" is unavailable`);
+		return backend;
+	}
+
+	assertExecutionAllowed(): void {
+		if (this.#disposing) throw new Error("Eval execution is unavailable while session disposal is in progress");
+	}
+
 	trackExecution<T>(execution: Promise<T>, abortController: AbortController): Promise<T> {
 		this.#abortControllers.add(abortController);
 		this.#activeExecutions.add(execution);
-		void execution.then(
-			() => {
-				this.#abortControllers.delete(abortController);
-				this.#activeExecutions.delete(execution);
-			},
-			() => {
-				this.#abortControllers.delete(abortController);
-				this.#activeExecutions.delete(execution);
-			},
-		);
+		void execution.finally(() => {
+			this.#abortControllers.delete(abortController);
+			this.#activeExecutions.delete(execution);
+		}).catch(() => undefined);
 		return execution;
 	}
 
-	/** Records a Python execution result in session history. */
-	recordPythonResult(code: string, result: PythonResult, options?: { excludeFromContext?: boolean }): void {
-		const meta = outputMeta().truncationFromSummary(result, { direction: "tail" }).get();
-		const message: PythonExecutionMessage = {
-			role: "pythonExecution",
+	recordResult(language: string, code: string, result: ExecutorBackendResult, options?: UserEvalOptions): void {
+		const message: EvalExecutionMessage = {
+			role: "evalExecution",
+			language,
 			code,
 			output: result.output,
 			exitCode: result.exitCode,
 			cancelled: result.cancelled,
-			truncated: result.truncated,
-			meta,
+			meta: outputMeta().truncationFromSummary(result, { direction: "tail" }).get(),
 			timestamp: Date.now(),
 			excludeFromContext: options?.excludeFromContext,
 		};
-		if (this.#host.isStreaming()) {
-			this.#pendingMessages.push(message);
-		} else {
-			this.#host.appendSessionMessage(message);
-		}
+		if (this.#host.isStreaming()) this.#pendingMessages.push(message);
+		else this.#host.appendSessionMessage(message);
 	}
 
-	/** Cancels every running Python execution. */
 	abort(): void {
-		for (const abortController of this.#abortControllers) abortController.abort();
+		if (this.#abortControllers.size === 0) return;
+		for (const controller of this.#abortControllers) controller.abort();
+		void evalBackendRegistry(this.#host.sessionManager).interrupt();
 	}
 
-	/** Whether a Python execution is currently running. */
-	get isRunning(): boolean {
-		return this.#abortControllers.size > 0;
-	}
-
-	/** Whether Python results are waiting for a safe persistence boundary. */
-	get hasPendingMessages(): boolean {
-		return this.#pendingMessages.length > 0;
-	}
-
-	/** Returns the stable owner shared by eval and session-owned tools. */
-	getKernelOwnerId(): string {
-		return this.#kernelOwnerId;
-	}
-
-	/** Returns the eval session shared with the Python backend. */
+	get isRunning(): boolean { return this.#abortControllers.size > 0; }
+	get hasPendingMessages(): boolean { return this.#pendingMessages.length > 0; }
+	getKernelOwnerId(): string { return this.#kernelOwnerId; }
 	getSessionId(): string | null {
 		if (this.#parentSessionId !== undefined) return this.#parentSessionId;
 		return defaultEvalSessionId({
@@ -159,61 +168,43 @@ export class EvalRunner {
 			getSessionFile: () => this.#host.sessionManager.getSessionFile() ?? null,
 		});
 	}
-
-	/** Flushes deferred Python results into agent state and persistence. */
 	flushPending(): void {
-		if (this.#pendingMessages.length === 0) return;
 		for (const message of this.#pendingMessages) this.#host.appendSessionMessage(message);
 		this.#pendingMessages = [];
 	}
+	beginDispose(): void { this.#disposing = true; }
 
-	/** Prevents new Python executions before asynchronous disposal starts. */
-	beginDispose(): void {
-		this.#disposing = true;
-	}
-
-	/** Waits for active work and disposes every retained eval kernel owned by the session. */
 	async disposeKernels(): Promise<void> {
 		const settled = await this.#prepareExecutionsForDispose();
-		if (!settled) {
-			logger.warn("Detaching retained eval-kernel ownership during dispose while eval execution is still active");
-		}
+		if (!settled) logger.warn("Detaching retained eval-kernel ownership while eval execution is still active");
 		const results = await Promise.allSettled([
 			disposeKernelSessionsByOwner(this.#kernelOwnerId),
 			disposeRubyKernelSessionsByOwner(this.#kernelOwnerId),
 			disposeJuliaKernelSessionsByOwner(this.#kernelOwnerId),
 			disposeVmContextsByOwner(this.#kernelOwnerId),
+			evalBackendRegistry(this.#host.sessionManager).dispose(),
 		]);
-		const errors: unknown[] = [];
-		for (const result of results) if (result.status === "rejected") errors.push(result.reason);
-		if (errors.length > 0) throw new AggregateError(errors, "Failed to dispose one or more eval kernels");
+		const errors = results.flatMap(result => (result.status === "rejected" ? [result.reason] : []));
+		if (errors.length) throw new AggregateError(errors, "Failed to dispose one or more eval kernels");
 	}
 
 	async #waitForExecutionsToSettle(timeoutMs: number): Promise<boolean> {
 		const deadline = Date.now() + timeoutMs;
-		while (this.#activeExecutions.size > 0) {
-			const remainingMs = deadline - Date.now();
-			if (remainingMs <= 0) return false;
+		while (this.#activeExecutions.size) {
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) return false;
 			const settled = await Promise.race([
-				Promise.allSettled(Array.from(this.#activeExecutions)).then(() => true),
-				Bun.sleep(remainingMs).then(() => false),
+				Promise.allSettled([...this.#activeExecutions]).then(() => true),
+				Bun.sleep(remaining).then(() => false),
 			]);
-			if (!settled && this.#activeExecutions.size > 0) return false;
+			if (!settled && this.#activeExecutions.size) return false;
 		}
 		return true;
 	}
-
 	async #prepareExecutionsForDispose(): Promise<boolean> {
-		if (!(await this.#waitForExecutionsToSettle(3_000))) {
-			logger.warn("Aborting active Python execution during dispose before retained kernel cleanup");
-			this.abort();
-			if (!(await this.#waitForExecutionsToSettle(1_000))) {
-				logger.warn(
-					"Python execution is still active after dispose aborted all active runs; retained kernel ownership will still be detached",
-				);
-				return false;
-			}
-		}
-		return true;
+		if (await this.#waitForExecutionsToSettle(3_000)) return true;
+		logger.warn("Aborting active eval execution during dispose before retained kernel cleanup");
+		this.abort();
+		return await this.#waitForExecutionsToSettle(1_000);
 	}
 }
