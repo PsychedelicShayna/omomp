@@ -9,6 +9,7 @@ type FakeEditor = {
 	setText(text: string): void;
 	getText(): string;
 	addToHistory(text: string): void;
+	clearDraft(historyText?: string): void;
 	setActionKeys(action: string, keys: string[]): void;
 	setCustomKeyHandler(key: string, handler: () => void): void;
 	clearCustomKeyHandlers(): void;
@@ -19,7 +20,9 @@ type FakeEditor = {
 function createContext() {
 	let editorText = "";
 	const submitted: unknown[] = [];
-	const handlePythonCommand = vi.fn(async (_code: string, _isExcluded: boolean) => {});
+	const handleEvalCommand = vi.fn(
+		async (_language: string, _code: string, _isExcluded: boolean, _reset: boolean, _alias: string) => {},
+	);
 	const handleBashCommand = vi.fn(async (_command: string, _isExcluded: boolean) => {});
 	const startPendingSubmission = vi.fn((submission: unknown) => submission);
 	const onInputCallback = vi.fn((submission: unknown) => submitted.push(submission));
@@ -33,6 +36,13 @@ function createContext() {
 			return editorText;
 		},
 		addToHistory: vi.fn(),
+		clearDraft(historyText) {
+			if (historyText !== undefined) this.addToHistory(historyText);
+			editorText = "";
+			this.pendingImages = [];
+			this.pendingImageLinks = [];
+			this.imageLinks = undefined;
+		},
 		setActionKeys: vi.fn(),
 		setCustomKeyHandler: vi.fn(),
 		clearCustomKeyHandlers: vi.fn(),
@@ -69,7 +79,7 @@ function createContext() {
 		isPythonMode: false,
 		fileSlashCommands: new Set<string>(),
 		isKnownSlashCommand: () => false,
-		handlePythonCommand,
+		handleEvalCommand,
 		handleBashCommand,
 		withLocalSubmission: async (_text: string, fn: () => Promise<unknown>) => fn(),
 	} as unknown as InteractiveModeContext;
@@ -77,7 +87,7 @@ function createContext() {
 	return {
 		ctx,
 		editor,
-		handlePythonCommand,
+		handleEvalCommand,
 		onInputCallback,
 		startPendingSubmission,
 		submitted,
@@ -86,13 +96,13 @@ function createContext() {
 
 describe("InputController Python prompt prefix", () => {
 	it("submits leading shell-variable prose as a normal prompt", async () => {
-		const { ctx, editor, handlePythonCommand, onInputCallback, startPendingSubmission, submitted } = createContext();
+		const { ctx, editor, handleEvalCommand, onInputCallback, startPendingSubmission, submitted } = createContext();
 		const controller = new InputController(ctx);
 		controller.setupEditorSubmitHandler();
 
 		await editor.onSubmit?.("$HOME is home");
 
-		expect(handlePythonCommand).not.toHaveBeenCalled();
+		expect(handleEvalCommand).not.toHaveBeenCalled();
 		expect(startPendingSubmission).toHaveBeenCalledWith({
 			text: "$HOME is home",
 			images: undefined,
@@ -116,13 +126,13 @@ describe("InputController Python prompt prefix", () => {
 			" |\n" +
 			" in: 282  out: 152  cache 344K  t: 3.3s  tok/s: 351.9/s\n" +
 			" is this command stuck in limbo";
-		const { ctx, editor, handlePythonCommand, onInputCallback, startPendingSubmission, submitted } = createContext();
+		const { ctx, editor, handleEvalCommand, onInputCallback, startPendingSubmission, submitted } = createContext();
 		const controller = new InputController(ctx);
 		controller.setupEditorSubmitHandler();
 
 		await editor.onSubmit?.(transcript);
 
-		expect(handlePythonCommand).not.toHaveBeenCalled();
+		expect(handleEvalCommand).not.toHaveBeenCalled();
 		expect(startPendingSubmission).toHaveBeenCalledWith({
 			text: transcript,
 			images: undefined,
@@ -141,24 +151,24 @@ describe("InputController Python prompt prefix", () => {
 	});
 
 	it("keeps space-separated Python shortcuts available", async () => {
-		const { ctx, editor, handlePythonCommand, onInputCallback } = createContext();
+		const { ctx, editor, handleEvalCommand, onInputCallback } = createContext();
 		const controller = new InputController(ctx);
 		controller.setupEditorSubmitHandler();
 
 		await editor.onSubmit?.("$ print(1)");
 
-		expect(handlePythonCommand).toHaveBeenCalledWith("print(1)", false);
+		expect(handleEvalCommand).toHaveBeenCalledWith("py", "print(1)", false, false, "py");
 		expect(onInputCallback).not.toHaveBeenCalled();
 	});
 
 	it("keeps excluded Python shortcuts space-separated too", async () => {
-		const { ctx, editor, handlePythonCommand, onInputCallback } = createContext();
+		const { ctx, editor, handleEvalCommand, onInputCallback } = createContext();
 		const controller = new InputController(ctx);
 		controller.setupEditorSubmitHandler();
 
-		await editor.onSubmit?.("$$ print(1)");
+		await editor.onSubmit?.("$~ print(1)");
 
-		expect(handlePythonCommand).toHaveBeenCalledWith("print(1)", true);
+		expect(handleEvalCommand).toHaveBeenCalledWith("py", "print(1)", true, false, "py");
 		expect(onInputCallback).not.toHaveBeenCalled();
 	});
 });
