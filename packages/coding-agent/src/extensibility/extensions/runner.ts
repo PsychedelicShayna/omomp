@@ -351,6 +351,12 @@ export class ExtensionRunner {
 	#navigateTreeHandler: NavigateTreeHandler = async () => ({ cancelled: false });
 	#switchSessionHandler: SwitchSessionHandler = async () => ({ cancelled: false });
 	#reloadHandler: () => Promise<void> = async () => {};
+	#applyRuntimeModelLoadoutHandler: ExtensionCommandContextActions["applyRuntimeModelLoadout"] = async () => {
+		throw new Error("Runtime model loadouts are unavailable before the extension runner is initialized");
+	};
+	#invalidatePromptCacheHandler: ExtensionCommandContextActions["invalidatePromptCache"] = () => {
+		throw new Error("Prompt-cache invalidation is unavailable before the extension runner is initialized");
+	};
 	#shutdownHandler: ShutdownHandler = () => {};
 	#getMemoryFn?: () => MemoryRuntimeContext | undefined;
 	#commandDiagnostics: Array<{ type: string; message: string; path: string }> = [];
@@ -576,6 +582,8 @@ export class ExtensionRunner {
 			this.#reloadHandler = commandContextActions.reload;
 			this.#getContextUsageFn = commandContextActions.getContextUsage;
 			this.#compactFn = commandContextActions.compact;
+			this.#applyRuntimeModelLoadoutHandler = commandContextActions.applyRuntimeModelLoadout;
+			this.#invalidatePromptCacheHandler = commandContextActions.invalidatePromptCache;
 		}
 
 		this.#uiContext = uiContext ?? noOpUIContext;
@@ -929,6 +937,8 @@ export class ExtensionRunner {
 			switchSession: sessionPath => this.#switchSessionHandler(sessionPath),
 			reload: () => this.#reloadHandler(),
 			compact: instructionsOrOptions => this.#compactFn(instructionsOrOptions),
+			applyRuntimeModelLoadout: loadout => this.#applyRuntimeModelLoadoutHandler(loadout),
+			invalidatePromptCache: () => this.#invalidatePromptCacheHandler(),
 		};
 	}
 

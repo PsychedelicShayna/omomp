@@ -2404,6 +2404,8 @@ export class AcpAgent implements Agent {
 				reload: async () => {
 					await record.session.reload();
 				},
+				applyRuntimeModelLoadout: loadout => record.session.applyRuntimeModelLoadout(loadout),
+				invalidatePromptCache: () => record.session.invalidatePromptCache(),
 				compact: instructionsOrOptions => runExtensionCompact(record.session, instructionsOrOptions),
 			},
 			uiContext,

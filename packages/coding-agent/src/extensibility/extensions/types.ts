@@ -109,6 +109,15 @@ export type { AppKeybinding, KeybindingsManager } from "../../config/keybindings
 export type { ExecOptions, ExecResult } from "../../exec/exec";
 export type { AgentToolResult, AgentToolUpdateCallback };
 
+/** Volatile model-role configuration applied atomically to the running session. */
+export interface RuntimeModelLoadout {
+	name: string;
+	mainModel: string;
+	modelRoles: Record<string, string>;
+	retryFallbackChains: Record<string, string[]>;
+	taskAgentModelOverrides: Record<string, string>;
+}
+
 /** Eval backend supplied by an extension for the lifetime of one session. */
 export interface ExtensionEvalBackend {
 	readonly id: string;
@@ -528,6 +537,12 @@ export interface ExtensionCommandContext extends ExtensionContext {
 
 	/** Reload the current session/runtime state. */
 	reload(): Promise<void>;
+
+	/** Apply or clear the session's volatile model loadout as one idle-only transition. */
+	applyRuntimeModelLoadout(loadout: RuntimeModelLoadout | undefined): Promise<void>;
+
+	/** Invalidate provider prompt-cache identity before the next request. */
+	invalidatePromptCache(): void;
 
 	/** Compact the session context (interactive mode shows UI). */
 	compact(instructionsOrOptions?: string | CompactOptions): Promise<void>;
@@ -1554,6 +1569,8 @@ export interface ExtensionCommandContextActions {
 	compact: (instructionsOrOptions?: string | CompactOptions) => Promise<void>;
 	switchSession: (sessionPath: string) => Promise<{ cancelled: boolean }>;
 	reload: () => Promise<void>;
+	applyRuntimeModelLoadout: (loadout: RuntimeModelLoadout | undefined) => Promise<void>;
+	invalidatePromptCache: () => void;
 }
 
 /** Full runtime = state + actions, including host-compatible service-tier fallbacks. */
