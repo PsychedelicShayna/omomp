@@ -9,6 +9,7 @@ import { IdleTimeout } from "../eval/idle-timeout";
 import { defaultEvalSessionId } from "../eval/session-id";
 import type { EvalCellResult, EvalDisplayOutput, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
 import evalDescription from "../prompts/tools/eval.md" with { type: "text" };
+import { extensionBackendAdapter, invokeEvalCell, registryForToolSession } from "../session/eval-service";
 import { DEFAULT_MAX_BYTES, OutputSink, type OutputSummary, TailBuffer } from "../session/streaming-output";
 import { resolveSpawnPolicy } from "../task/spawn-policy";
 import { webpExclusionForModel } from "../utils/image-loading";
@@ -46,12 +47,10 @@ function joinWithOr(items: readonly string[]): string {
 	if (items.length === 2) return `${items[0]} or ${items[1]}`;
 	return `${items.slice(0, -1).join(", ")}, or ${items[items.length - 1]}`;
 }
-
-function describeLanguageField(langs: readonly EvalLanguageToken[]): string {
-	return `runtime: ${langs.map(lang => EVAL_LANGUAGE_RUNTIME[lang]).join(", ")}`;
+function describeLanguageField(langs: readonly string[]): string {
+	return `runtime: ${langs.map(lang => EVAL_LANGUAGE_RUNTIME[lang as EvalLanguageToken] ?? `"${lang}"`).join(", ")}`;
 }
-
-function describeCodeField(langs: readonly EvalLanguageToken[]): string {
+function describeCodeField(langs: readonly string[]): string {
 	const replLangs = langs.filter(lang => lang === "rb" || lang === "jl");
 	// No persistent REPL backends → keep the original py/js phrasing verbatim so the
 	// default (rb/jl off) wire schema stays byte-identical to the pre-feature one.
@@ -63,12 +62,12 @@ function describeCodeField(langs: readonly EvalLanguageToken[]): string {
 	return `code to run in this eval call, verbatim. ${clauses.join("; ")}.`;
 }
 
-/** One-line discovery summary listing the runtimes available this session. */
-function summarizeEvalLanguages(langs: readonly EvalLanguageToken[]): string {
-	const names = langs.map(lang => EVAL_LANGUAGE_NAME[lang]);
+function summarizeEvalLanguages(langs: readonly string[], session?: ToolSession | null): string {
+	const registered = session ? registryForToolSession(session)?.modelVisibleBackends() ?? [] : [];
+	const labels = new Map(registered.map(backend => [backend.id, backend.label]));
+	const names = langs.map(lang => EVAL_LANGUAGE_NAME[lang as EvalLanguageToken] ?? labels.get(lang) ?? lang);
 	const list = names.length > 0 ? joinWithOr(names) : "Python or JavaScript";
-	// "in-process" matches the historical py/js summary; persistent kernels (rb/jl) switch wording.
-	const backend = langs.some(lang => lang === "rb" || lang === "jl") ? "a persistent" : "an in-process";
+	const backend = langs.some(lang => lang === "rb" || lang === "jl" || labels.has(lang)) ? "a persistent" : "an in-process";
 	return `Execute ${list} code in ${backend} eval backend`;
 }
 
@@ -106,12 +105,9 @@ export type EvalCellInput = EvalToolParams;
 
 /**
  * Build a session-scoped copy of the eval schema whose `language` enum and field
- * descriptions advertise only the runtimes enabled for this session. Disabled
- * backends never reach the model: the wire schema, BM25 discovery corpus, and
- * tool description stay in lockstep with {@link resolveEvalBackends}. The static
- * {@link evalSchema} (full union) remains the type-level source of truth.
+ * descriptions advertise only the runtimes enabled for this session.
  */
-function buildEvalSchema(langs: readonly EvalLanguageToken[]): typeof evalSchema {
+function buildEvalSchema(langs: readonly string[]): typeof evalSchema {
 	const schema = type({
 		language: type.enumerated(...langs).describe(describeLanguageField(langs)),
 		code: type("string").describe(describeCodeField(langs)),
@@ -216,8 +212,14 @@ function detailsNotice(cells: ResolvedEvalCell[]): string | undefined {
 	];
 	return notices.length > 0 ? notices.join(" ") : undefined;
 }
-
-async function resolveBackend(session: ToolSession, language: EvalLanguage): Promise<ResolvedBackend> {
+async function resolveBackend(session: ToolSession, language: string): Promise<ResolvedBackend> {
+	const extensionBackend = registryForToolSession(session)?.resolve(language);
+	if (extensionBackend) {
+		if (!(await extensionBackend.isAvailable())) {
+			throw new ToolError(`Eval backend "${extensionBackend.id}" is unavailable in this session.`);
+		}
+		return { backend: extensionBackendAdapter(extensionBackend) };
+	}
 	const backends = resolveEvalBackends(session);
 	const allowPy = backends.python;
 	const allowJs = backends.js;
@@ -288,7 +290,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 		return [`Language: ${language}`, `Code:\n${truncateForPrompt(code)}`];
 	};
 	get summary(): string {
-		return summarizeEvalLanguages(this.#enabledLanguages());
+		return summarizeEvalLanguages(this.#enabledLanguages(), this.session);
 	}
 	readonly loadMode = "essential";
 	readonly label = "Eval";
@@ -370,17 +372,15 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 	};
 
 	readonly #proxyExecutor?: EvalProxyExecutor;
-
-	#paramsKey?: string;
 	#cachedParams?: typeof evalSchema;
-
-	/**
-	 * Languages enabled for this session, in display order. Detached tools (no
-	 * session) fall back to the shipped defaults (py/js; rb/jl are opt-in).
-	 */
-	#enabledLanguages(): EvalLanguageToken[] {
-		return this.session ? enabledEvalLanguages(resolveEvalBackends(this.session)) : ["py", "js"];
+	#paramsKey?: string;
+	#enabledLanguages(): string[] {
+		const builtins = this.session ? enabledEvalLanguages(resolveEvalBackends(this.session)) : ["py", "js"];
+		if (!this.session) return builtins;
+		const registered = registryForToolSession(this.session)?.modelVisibleBackends().map(backend => backend.id) ?? [];
+		return [...builtins, ...registered];
 	}
+
 
 	constructor(
 		private readonly session: ToolSession | null,
@@ -406,14 +406,17 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 		const session = this.session;
 		const excludeWebP = webpExclusionForModel(session.getActiveModel?.());
 
-		const cellLanguage: EvalLanguage =
-			params.language === "py"
+		const requestedLanguage = params.language as string;
+		const cellLanguage =
+			requestedLanguage === "py"
 				? "python"
-				: params.language === "rb"
+				: requestedLanguage === "rb"
 					? "ruby"
-					: params.language === "jl"
+					: requestedLanguage === "jl"
 						? "julia"
-						: "js";
+						: requestedLanguage === "js"
+							? "js"
+							: requestedLanguage;
 		const resolved = await resolveBackend(session, cellLanguage);
 		const cells: ResolvedEvalCell[] = [
 			{
@@ -560,7 +563,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 					const startTime = Date.now();
 					let result: ExecutorBackendResult;
 					try {
-						result = await backend.execute(cell.code, {
+						result = await invokeEvalCell(backend, cell.code, {
 							cwd: session.cwd,
 							sessionId,
 							sessionFile: sessionFile ?? undefined,

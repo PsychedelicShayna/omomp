@@ -43,7 +43,7 @@ import type { logger as PiLogger } from "@oh-my-pi/pi-utils";
 import type { KeybindingsManager } from "../../config/keybindings";
 import type { ModelRegistry } from "../../config/model-registry";
 import type { EditToolDetails } from "../../edit";
-import type { PythonResult } from "../../eval/py/executor";
+import type { ExecutorBackendExecOptions, ExecutorBackendResult } from "../../eval/backend";
 import type { BashResult } from "../../exec/bash-executor";
 import type { ExecOptions, ExecResult } from "../../exec/exec";
 import type * as PiCodingAgent from "../../index";
@@ -108,6 +108,20 @@ import type { SlashCommandInfo } from "../slash-commands";
 export type { AppKeybinding, KeybindingsManager } from "../../config/keybindings";
 export type { ExecOptions, ExecResult } from "../../exec/exec";
 export type { AgentToolResult, AgentToolUpdateCallback };
+
+/** Eval backend supplied by an extension for the lifetime of one session. */
+export interface ExtensionEvalBackend {
+	readonly id: string;
+	readonly aliases: readonly string[];
+	readonly label: string;
+	readonly highlightLang: string;
+	readonly modelVisible: boolean;
+	isAvailable(): boolean | Promise<boolean>;
+	execute(code: string, options: ExecutorBackendExecOptions): Promise<ExecutorBackendResult>;
+	reset?(): void | Promise<void>;
+	interrupt?(): void | Promise<void>;
+	dispose?(): void | Promise<void>;
+}
 
 // ============================================================================
 // UI Context
@@ -773,17 +787,21 @@ export interface UserBashEvent {
 }
 
 // ============================================================================
-// User Python Events
+// User Eval Events
 // ============================================================================
 
-/** Fired when user executes Python code via $ or $$ prefix */
-export interface UserPythonEvent {
-	type: "user_python";
-	/** The Python code to execute */
+/** Fired when user executes code through an eval backend. */
+export interface UserEvalEvent {
+	type: "user_eval";
+	/** Language token passed to the selected eval backend. */
+	language: string;
+	/** Prefix alias selected by the user. */
+	alias: string;
+	/** The code to execute. */
 	code: string;
-	/** True if $$ prefix was used (excluded from LLM context) */
+	/** True if the `$~` prefix excluded the cell from model context. */
 	excludeFromContext: boolean;
-	/** Current working directory */
+	/** Current working directory. */
 	cwd: string;
 }
 
@@ -987,7 +1005,7 @@ export type ExtensionEvent =
 	| CredentialDisabledEvent
 	| McpNotificationEvent
 	| UserBashEvent
-	| UserPythonEvent
+	| UserEvalEvent
 	| InputEvent
 	| ToolCallEvent
 	| ToolResultEvent
@@ -1022,10 +1040,10 @@ export interface UserBashEventResult {
 	result?: BashResult;
 }
 
-/** Result from user_python event handler */
-export interface UserPythonEventResult {
-	/** Full replacement: extension handled execution, use this result */
-	result?: PythonResult;
+/** Result from a user_eval event handler. */
+export interface UserEvalEventResult {
+	/** Full replacement: extension handled execution, use this result. */
+	result?: ExecutorBackendResult;
 }
 
 export type { ToolResultEventResult } from "../shared-events";
@@ -1177,7 +1195,7 @@ export interface ExtensionAPI {
 	on(event: "tool_call", handler: ExtensionHandler<ToolCallEvent, ToolCallEventResult>): void;
 	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
-	on(event: "user_python", handler: ExtensionHandler<UserPythonEvent, UserPythonEventResult>): void;
+	on(event: "user_eval", handler: ExtensionHandler<UserEvalEvent, UserEvalEventResult>): void;
 	on(event: "mcp_notification", handler: ExtensionHandler<McpNotificationEvent>): void;
 
 	// =========================================================================
@@ -1186,6 +1204,9 @@ export interface ExtensionAPI {
 
 	/** Register a tool that the LLM can call. */
 	registerTool<TParams extends TSchema = TSchema, TDetails = unknown>(tool: ToolDefinition<TParams, TDetails>): void;
+
+	/** Register a validated eval backend for this session. */
+	registerEvalBackend(backend: ExtensionEvalBackend): void;
 
 	// =========================================================================
 	// Command, Shortcut, Flag Registration
@@ -1485,6 +1506,8 @@ export interface ExtensionRuntimeState {
 	flagValues: Map<string, boolean | string>;
 	/** Provider registrations queued during extension loading, processed during session initialization */
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; sourceId: string }>;
+	/** Eval backends registered before the session runner is constructed. */
+	pendingEvalBackendRegistrations: ExtensionEvalBackend[];
 }
 
 /** Action implementations for ExtensionAPI methods. */
@@ -1537,6 +1560,8 @@ export interface ExtensionCommandContextActions {
 export interface ExtensionRuntime extends ExtensionRuntimeState, ExtensionActions {
 	getServiceTiers: GetServiceTiersHandler;
 	setServiceTier: SetServiceTierHandler;
+	/** Register a validated eval backend for this session. */
+	registerEvalBackend(backend: ExtensionEvalBackend): void;
 }
 
 /** Loaded extension with all registered items. */

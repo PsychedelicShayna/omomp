@@ -499,7 +499,6 @@ describe("AgentSession python cleanup", () => {
 		// restarted, and keeps serving the surviving session.
 		await expect(firstExecution).resolves.toMatchObject({
 			cancelled: true,
-			stdinRequested: false,
 		});
 		await secondSession.executePython("print('owner-b after detach')");
 		expect(startSpy).toHaveBeenCalledTimes(1);
@@ -532,19 +531,19 @@ describe("AgentSession python cleanup", () => {
 		const session = await createSession(tempDir, cwd);
 		const disposeSession = session.dispose();
 		await expect(session.executePython("print('late')")).rejects.toThrow(
-			"Python execution is unavailable while session disposal is in progress",
+			"Eval execution is unavailable while session disposal is in progress",
 		);
 		await disposeSession;
 		expect(executeSpy).not.toHaveBeenCalled();
 	});
 
-	it("rejects direct session Python starts after an async user_python hook yields during dispose", async () => {
+	it("rejects eval starts after an async user_eval hook yields during dispose", async () => {
 		const { tempDir, cwd } = createTempProject();
 		tempDirs.push(tempDir);
 		const hookStarted = Promise.withResolvers<void>();
 		const releaseHook = Promise.withResolvers<void>();
 		const hookExtension: ExtensionFactory = api => {
-			api.on("user_python", async () => {
+			api.on("user_eval", async () => {
 				hookStarted.resolve();
 				await releaseHook.promise;
 				return undefined;
@@ -564,7 +563,7 @@ describe("AgentSession python cleanup", () => {
 		});
 
 		const session = await createSession(tempDir, cwd, { extensions: [hookExtension] });
-		const execution = session.executePython("print('late after hook')");
+		const execution = session.executeEval("py", "print('late after hook')");
 		await hookStarted.promise;
 		let disposed = false;
 		const disposeSession = session.dispose().then(() => {
@@ -573,19 +572,19 @@ describe("AgentSession python cleanup", () => {
 		await Bun.sleep(0);
 		expect(disposed).toBe(false);
 		releaseHook.resolve();
-		await expect(execution).rejects.toThrow("Python execution is unavailable while session disposal is in progress");
+		await expect(execution).rejects.toThrow("Eval execution is unavailable while session disposal is in progress");
 		await disposeSession;
 		expect(disposed).toBe(true);
 		expect(executeSpy).not.toHaveBeenCalled();
 	}, 10000);
 
-	it("rejects async user_python hook results after dispose begins", async () => {
+	it("rejects async user_eval hook results after dispose begins", async () => {
 		const { tempDir, cwd } = createTempProject();
 		tempDirs.push(tempDir);
 		const hookStarted = Promise.withResolvers<void>();
 		const releaseHook = Promise.withResolvers<void>();
 		const hookExtension: ExtensionFactory = api => {
-			api.on("user_python", async () => {
+			api.on("user_eval", async () => {
 				hookStarted.resolve();
 				await releaseHook.promise;
 				return {
@@ -594,12 +593,12 @@ describe("AgentSession python cleanup", () => {
 						exitCode: 0,
 						cancelled: false,
 						truncated: false,
+						artifactId: undefined,
 						totalLines: 1,
 						totalBytes: 11,
 						outputLines: 1,
 						outputBytes: 11,
 						displayOutputs: [],
-						stdinRequested: false,
 					},
 				};
 			});
@@ -618,7 +617,7 @@ describe("AgentSession python cleanup", () => {
 		});
 
 		const session = await createSession(tempDir, cwd, { extensions: [hookExtension] });
-		const execution = session.executePython("print('late hook result')");
+		const execution = session.executeEval("py", "print('late hook result')");
 		await hookStarted.promise;
 		let disposed = false;
 		const disposeSession = session.dispose().then(() => {
@@ -627,11 +626,11 @@ describe("AgentSession python cleanup", () => {
 		await Bun.sleep(0);
 		expect(disposed).toBe(false);
 		releaseHook.resolve();
-		await expect(execution).rejects.toThrow("Python execution is unavailable while session disposal is in progress");
+		await expect(execution).rejects.toThrow("Eval execution is unavailable while session disposal is in progress");
 		await disposeSession;
 		expect(disposed).toBe(true);
 		expect(executeSpy).not.toHaveBeenCalled();
-		expect(session.messages.some(message => message.role === "pythonExecution")).toBe(false);
+		expect(session.messages.some(message => message.role === "evalExecution")).toBe(false);
 	}, 10000);
 
 	it("rejects eval starts once dispose begins", async () => {
@@ -656,7 +655,7 @@ describe("AgentSession python cleanup", () => {
 		const disposeSession = session.dispose();
 		await expect(
 			EvalTool!.execute("call-id", { language: "py", code: "print('late')" }, undefined, undefined, undefined),
-		).rejects.toThrow("Python execution is unavailable while session disposal is in progress");
+		).rejects.toThrow("Eval execution is unavailable while session disposal is in progress");
 		await disposeSession;
 		expect(executeSpy).not.toHaveBeenCalled();
 	});
@@ -698,7 +697,7 @@ describe("AgentSession python cleanup", () => {
 		await artifactStarted.promise;
 		const disposeSession = session.dispose();
 		releaseArtifact.resolve();
-		await expect(execution).rejects.toThrow("Python execution is unavailable while session disposal is in progress");
+		await expect(execution).rejects.toThrow("Eval execution is unavailable while session disposal is in progress");
 		await disposeSession;
 		expect(executeSpy).not.toHaveBeenCalled();
 	});
