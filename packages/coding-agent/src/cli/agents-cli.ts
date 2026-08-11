@@ -58,6 +58,8 @@ function toFrontmatter(agent: AgentDefinition): Record<string, unknown> {
 		description: agent.description,
 	};
 
+	if (agent.harness && agent.harness !== "omp") frontmatter.harness = agent.harness;
+
 	if (agent.tools && agent.tools.length > 0) frontmatter.tools = agent.tools;
 	if (agent.spawns !== undefined) frontmatter.spawns = agent.spawns;
 	if (agent.model && agent.model.length > 0) frontmatter.model = agent.model;
