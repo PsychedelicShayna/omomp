@@ -1,0 +1,8 @@
+{
+  "extends": "../../packages/coding-agent/tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "../../../..",
+    "allowImportingTsExtensions": true
+  },
+  "include": ["**/*.ts"]
+}
