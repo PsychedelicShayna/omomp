@@ -52,6 +52,47 @@ import {
 	type SettingValue,
 } from "./settings-schema";
 
+export interface RuntimeModelOverrides {
+	modelRoles: Record<string, string>;
+	retryFallbackChains: Record<string, string[]>;
+	taskAgentModelOverrides: Record<string, string>;
+}
+
+function assertRuntimeSelector(value: unknown, label: string): asserts value is string {
+	if (typeof value !== "string" || value.trim() !== value || value.length === 0) {
+		throw new Error(`${label} must be a non-empty, trimmed model selector`);
+	}
+}
+
+function validateRuntimeModelOverrides(overrides: RuntimeModelOverrides): RuntimeModelOverrides {
+	const validateSelectorMap = (value: unknown, label: string): Record<string, string> => {
+		if (!isRecord(value)) throw new Error(`${label} must be a record`);
+		const result: Record<string, string> = {};
+		for (const [key, selector] of Object.entries(value)) {
+			if (!key.trim() || key.trim() !== key) throw new Error(`${label} contains an invalid key`);
+			assertRuntimeSelector(selector, `${label}.${key}`);
+			result[key] = selector;
+		}
+		return result;
+	};
+	if (!isRecord(overrides)) throw new Error("Runtime model overrides must be a record");
+	if (!isRecord(overrides.retryFallbackChains)) throw new Error("retryFallbackChains must be a record");
+	const retryFallbackChains: Record<string, string[]> = {};
+	for (const [key, chain] of Object.entries(overrides.retryFallbackChains)) {
+		if (!key.trim() || key.trim() !== key) throw new Error("retryFallbackChains contains an invalid key");
+		if (!Array.isArray(chain)) throw new Error(`retryFallbackChains.${key} must be an array`);
+		retryFallbackChains[key] = chain.map((selector, index) => {
+			assertRuntimeSelector(selector, `retryFallbackChains.${key}[${index}]`);
+			return selector;
+		});
+	}
+	return {
+		modelRoles: validateSelectorMap(overrides.modelRoles, "modelRoles"),
+		retryFallbackChains,
+		taskAgentModelOverrides: validateSelectorMap(overrides.taskAgentModelOverrides, "taskAgentModelOverrides"),
+	};
+}
+
 // Re-export types that callers need
 export type * from "./settings-schema";
 export * from "./settings-schema";
@@ -343,6 +384,15 @@ export class Settings {
 	#overrides: RawSettings = {};
 	/** Merged view (global + project + overrides) */
 	#merged: RawSettings = {};
+	/** Active atomic model loadout and the pre-loadout runtime values it shadows. */
+	#runtimeModelOverrides: RuntimeModelOverrides | undefined;
+	#runtimeModelOverrideBaseline:
+		| {
+				modelRoles: unknown;
+				retryFallbackChains: unknown;
+				taskAgentModelOverrides: unknown;
+		  }
+		| undefined;
 	/** Cached resolved values from the merged view, including defaults/path scoping */
 	#resolvedCache = new Map<SettingPath, unknown>();
 	#editVariantCache: readonly EditVariantEntry[] | undefined;
@@ -530,9 +580,73 @@ export class Settings {
 		this.#fireEffectiveSettingChanged(path, this.get(path), prev);
 	}
 
+	/** Return a detached snapshot of the active volatile model loadout maps. */
+	getRuntimeModelOverrides(): RuntimeModelOverrides | undefined {
+		return this.#runtimeModelOverrides ? structuredClone(this.#runtimeModelOverrides) : undefined;
+	}
+
+	/**
+	 * Atomically replace or clear the volatile model loadout maps.
+	 * Validation and cloning complete before the override layer is mutated.
+	 */
+	applyRuntimeOverridesAtomically(overrides: RuntimeModelOverrides | undefined): void {
+		if (
+			overrides === undefined &&
+			this.#runtimeModelOverrides === undefined &&
+			this.#runtimeModelOverrideBaseline === undefined
+		) {
+			return;
+		}
+		const previousModelRoles = structuredClone(this.get("modelRoles"));
+		const validated = overrides === undefined ? undefined : validateRuntimeModelOverrides(overrides);
+		if (validated && !this.#runtimeModelOverrideBaseline) {
+			this.#runtimeModelOverrideBaseline = {
+				modelRoles: structuredClone(getByPath(this.#overrides, ["modelRoles"])),
+				retryFallbackChains: structuredClone(getByPath(this.#overrides, ["retry", "fallbackChains"])),
+				taskAgentModelOverrides: structuredClone(getByPath(this.#overrides, ["task", "agentModelOverrides"])),
+			};
+		}
+
+		const nextOverrides = structuredClone(this.#overrides);
+		const assignOrDelete = (segments: string[], value: unknown): void => {
+			if (value !== undefined) {
+				setByPath(nextOverrides, segments, value);
+				return;
+			}
+			let current = nextOverrides;
+			for (let index = 0; index < segments.length - 1; index++) {
+				const child = current[segments[index]];
+				if (!isRecord(child)) return;
+				current = child;
+			}
+			delete current[segments[segments.length - 1]];
+		};
+
+		if (validated) {
+			assignOrDelete(["modelRoles"], validated.modelRoles);
+			assignOrDelete(["retry", "fallbackChains"], validated.retryFallbackChains);
+			assignOrDelete(["task", "agentModelOverrides"], validated.taskAgentModelOverrides);
+		} else {
+			const baseline = this.#runtimeModelOverrideBaseline;
+			assignOrDelete(["modelRoles"], baseline?.modelRoles);
+			assignOrDelete(["retry", "fallbackChains"], baseline?.retryFallbackChains);
+			assignOrDelete(["task", "agentModelOverrides"], baseline?.taskAgentModelOverrides);
+		}
+
+		this.#overrides = nextOverrides;
+		this.#runtimeModelOverrides = validated;
+		if (!validated) this.#runtimeModelOverrideBaseline = undefined;
+		this.#savedRuntimeModelRoleOverrides.clear();
+		this.#rebuildMerged();
+		if (!Bun.deepEquals(previousModelRoles, this.get("modelRoles"))) {
+			modelRolesSignal.fire();
+		}
+		runtimeConfigChangedSignal.fire();
+	}
 	/**
 	 * Clear a runtime override.
 	 */
+
 	clearOverride(path: SettingPath): void {
 		if (path === "modelRoles") {
 			this.#savedRuntimeModelRoleOverrides.clear();
@@ -2338,6 +2452,12 @@ const appendOnlyModeSignal = new SettingSignal<[value: string]>("provider.append
  * can register independently without overwriting each other.
  */
 export const onAppendOnlyModeChanged = (cb: (value: string) => void) => appendOnlyModeSignal.on(cb);
+
+/** Fires once after an atomic runtime-model configuration replacement. */
+const runtimeConfigChangedSignal = new SettingSignal("runtime config");
+
+/** Subscribe to atomic runtime-model configuration replacements. */
+export const onRuntimeConfigChanged = (cb: () => void) => runtimeConfigChangedSignal.on(cb);
 
 /** Fires when any model role changes at runtime. */
 const modelRolesSignal = new SettingSignal("modelRoles");
