@@ -27,6 +27,7 @@ import {
 	type FileMentionMessage,
 	type HookMessage,
 	normalizeCustomMessagePayload,
+	type EvalExecutionMessage,
 	type PythonExecutionMessage,
 	sanitizeRehydratedOpenAIResponsesAssistantMessage,
 	stripInternalDetailsFields,
@@ -2047,6 +2048,7 @@ export class SessionManager {
 			| CustomMessage
 			| HookMessage
 			| BashExecutionMessage
+			| EvalExecutionMessage
 			| PythonExecutionMessage
 			| FileMentionMessage,
 	): string {
@@ -2065,6 +2067,7 @@ export class SessionManager {
 			| CustomMessage
 			| HookMessage
 			| BashExecutionMessage
+			| EvalExecutionMessage
 			| PythonExecutionMessage
 			| FileMentionMessage,
 		parentId: string | null,

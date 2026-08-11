@@ -19,7 +19,7 @@ import {
 const PREVIEW_LINES = 20;
 const MAX_DISPLAY_LINE_CHARS = 4000;
 
-export type EvalExecutionLanguage = "python" | "js";
+export type EvalExecutionLanguage = string;
 
 export class EvalExecutionComponent extends Container {
 	#outputLines: string[] = [];
@@ -30,16 +30,32 @@ export class EvalExecutionComponent extends Container {
 	#expanded = false;
 	#contentContainer: Container;
 
-	#highlightLang(): "python" | "javascript" {
-		return this.language === "js" ? "javascript" : "python";
+	#highlightLang(): string {
+		switch (this.language) {
+			case "py":
+			case "python":
+				return "python";
+			case "js":
+			case "javascript":
+				return "javascript";
+			case "rb":
+			case "ruby":
+				return "ruby";
+			case "jl":
+			case "julia":
+				return "julia";
+			default:
+				return this.language;
+		}
 	}
 
 	#formatHeader(colorKey: ExecutionColorKey): Text {
-		const prompt = theme.fg(colorKey, theme.bold(">>>"));
-		const continuation = theme.fg(colorKey, "    ");
+		const promptText = `[${this.language}] >>>`;
+		const prompt = theme.fg(colorKey, theme.bold(promptText));
+		const continuation = theme.fg(colorKey, " ".repeat(promptText.length));
 		const codeLines = highlightCode(this.code, this.#highlightLang());
 		const headerLines = codeLines.map((line, index) =>
-			index === 0 ? `${prompt} ${line}` : `${continuation}${line}`,
+			index === 0 ? `${prompt} ${line}` : `${continuation} ${line}`,
 		);
 		return new Text(headerLines.join("\n"), 1, 0);
 	}
@@ -48,7 +64,7 @@ export class EvalExecutionComponent extends Container {
 		private readonly code: string,
 		ui: TUI,
 		private readonly excludeFromContext = false,
-		private readonly language: EvalExecutionLanguage = "python",
+		private readonly language: EvalExecutionLanguage = "py",
 	) {
 		super();
 

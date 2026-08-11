@@ -60,16 +60,35 @@ function migrateV2ToV3(entries: FileEntry[]): void {
  * Run all necessary migrations to bring entries to current version.
  * Mutates entries in place. Returns true if any migration was applied.
  */
+/** Normalize the legacy Python-only record into the canonical generic eval message. */
+function migratePythonExecutionMessages(entries: FileEntry[]): boolean {
+	let migrated = false;
+	for (const entry of entries) {
+		if (entry.type !== "message") continue;
+		const message = entry.message as { role?: string; language?: string };
+		if (message.role !== "pythonExecution") continue;
+		message.role = "evalExecution";
+		message.language = "py";
+		migrated = true;
+	}
+	return migrated;
+}
+
 export function migrateToCurrentVersion(entries: FileEntry[]): boolean {
 	const header = entries.find(e => e.type === "session") as SessionHeader | undefined;
 	const version = header?.version ?? 1;
+	let migrated = migratePythonExecutionMessages(entries);
 
-	if (version >= CURRENT_SESSION_VERSION) return false;
+	if (version < 2) {
+		migrateV1ToV2(entries);
+		migrated = true;
+	}
+	if (version < 3) {
+		migrateV2ToV3(entries);
+		migrated = true;
+	}
 
-	if (version < 2) migrateV1ToV2(entries);
-	if (version < 3) migrateV2ToV3(entries);
-
-	return true;
+	return migrated;
 }
 
 /** Exported for testing */

@@ -1371,7 +1371,7 @@ function obfuscateAdvisorMessage(
 			const command = obfuscator.obfuscate(formatExecutionSourcePreview(msg.command), sharedRegexSecretValues);
 			return command === msg.command ? message : ({ ...(message as object), command } as AgentMessage);
 		}
-		case "pythonExecution": {
+		case "evalExecution": {
 			const msg = message as AgentMessage & { code: string };
 			const code = obfuscator.obfuscate(formatExecutionSourcePreview(msg.code), sharedRegexSecretValues);
 			return code === msg.code ? message : ({ ...(message as object), code } as AgentMessage);

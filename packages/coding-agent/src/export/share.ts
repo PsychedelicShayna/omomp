@@ -166,7 +166,7 @@ function collectShareRegexSecretValues(o: SecretObfuscator, data: SessionData): 
 				add(message.output);
 				addOutputMeta(message.meta);
 				return;
-			case "pythonExecution":
+			case "evalExecution":
 				add(message.code);
 				add(message.output);
 				addOutputMeta(message.meta);
@@ -445,7 +445,7 @@ function redactShareMessage(
 				output: o.obfuscate(message.output, sharedRegexSecretValues),
 				meta: redactShareOutputMeta(o, message.meta, sharedRegexSecretValues),
 			};
-		case "pythonExecution":
+		case "evalExecution":
 			return {
 				...message,
 				code: o.obfuscate(message.code, sharedRegexSecretValues),

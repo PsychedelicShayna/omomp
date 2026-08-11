@@ -255,25 +255,26 @@ function normalizeSessionMessageForProviderReplay(message: AgentMessage): unknow
 					: undefined,
 				excludeFromContext: message.excludeFromContext,
 			};
-		case "pythonExecution":
+		case "evalExecution":
 			return {
 				role: message.role,
+				language: message.language,
 				code: message.code,
 				output: message.output,
 				exitCode: message.exitCode,
 				cancelled: message.cancelled,
-				meta: message.meta
-					? {
-							truncation: normalizeProviderReplayValue(message.meta.truncation),
-							limits: normalizeProviderReplayValue(message.meta.limits),
-							diagnostics: message.meta.diagnostics
-								? normalizeProviderReplayValue({
-										summary: message.meta.diagnostics.summary,
-										messages: message.meta.diagnostics.messages,
-									})
-								: undefined,
-						}
-					: undefined,
+				meta: normalizeProviderReplayValue(message.meta),
+				excludeFromContext: message.excludeFromContext,
+			};
+		case "pythonExecution":
+			return {
+				role: "evalExecution",
+				language: "py",
+				code: message.code,
+				output: message.output,
+				exitCode: message.exitCode,
+				cancelled: message.cancelled,
+				meta: normalizeProviderReplayValue(message.meta),
 				excludeFromContext: message.excludeFromContext,
 			};
 		case "custom":
@@ -863,9 +864,26 @@ export interface BashExecutionMessage {
 	excludeFromContext?: boolean;
 }
 
+/** Output metadata persisted with a generic eval execution. */
+export type ExecutionOutputMeta = OutputMeta;
+
+/** Message type for user-initiated execution in any registered eval backend. */
+export interface EvalExecutionMessage {
+	role: "evalExecution";
+	language: string;
+	code: string;
+	output: string;
+	exitCode?: number;
+	cancelled?: boolean;
+	excludeFromContext?: boolean;
+	timestamp: number;
+	meta?: ExecutionOutputMeta;
+}
+
+
 /**
- * Message type for user-initiated Python executions via the $ command.
- * Shares the same kernel session as eval's Python backend.
+ * Legacy Python-only execution message. Decoder migration may read this shape;
+ * new writers must emit {@link EvalExecutionMessage}.
  */
 export interface PythonExecutionMessage {
 	role: "pythonExecution";
@@ -931,6 +949,7 @@ export interface FileMentionMessage {
 declare module "@oh-my-pi/pi-agent-core" {
 	interface CustomAgentMessages {
 		bashExecution: BashExecutionMessage;
+		evalExecution: EvalExecutionMessage;
 		pythonExecution: PythonExecutionMessage;
 		custom: CustomMessage;
 		hookMessage: HookMessage;
@@ -959,23 +978,19 @@ export function bashExecutionToText(msg: BashExecutionMessage): string {
 	return text;
 }
 
-/**
- * Convert a PythonExecutionMessage to user message text for LLM context.
- */
-export function pythonExecutionToText(msg: PythonExecutionMessage): string {
-	let text = `Ran Python:\n\`\`\`python\n${msg.code}\n\`\`\`\n`;
-	if (msg.output) {
-		text += `Output:\n\`\`\`\n${msg.output}\n\`\`\``;
-	} else {
-		text += "(no output)";
-	}
-	if (msg.cancelled) {
-		text += "\n\n(execution cancelled)";
-	} else if (msg.exitCode !== null && msg.exitCode !== undefined && msg.exitCode !== 0) {
-		text += `\n\nExecution failed with code ${msg.exitCode}`;
-	}
+/** Convert a generic eval execution to user message text for LLM context. */
+export function evalExecutionToText(msg: EvalExecutionMessage): string {
+	let text = `Ran ${msg.language}:\n\`\`\`${msg.language}\n${msg.code}\n\`\`\`\n`;
+	text += msg.output ? `Output:\n\`\`\`\n${msg.output}\n\`\`\`` : "(no output)";
+	if (msg.cancelled) text += "\n\n(execution cancelled)";
+	else if (msg.exitCode !== undefined && msg.exitCode !== 0) text += `\n\nExecution failed with code ${msg.exitCode}`;
 	text += formatOutputNotice(msg.meta);
 	return text;
+}
+
+/** Decoder-only formatter retained for legacy records. */
+export function pythonExecutionToText(msg: PythonExecutionMessage): string {
+	return evalExecutionToText({ ...msg, role: "evalExecution", language: "py" });
 }
 
 export function sanitizeRehydratedOpenAIResponsesAssistantMessage(message: AssistantMessage): AssistantMessage {
@@ -1114,18 +1129,18 @@ function convertOne(m: AgentMessage, interruptedNext: boolean): Message[] {
 					timestamp: m.timestamp,
 				},
 			];
-		case "pythonExecution":
-			if (m.excludeFromContext) {
-				return [];
-			}
+		case "evalExecution":
+			if (m.excludeFromContext) return [];
 			return [
 				{
 					role: "user",
-					content: [{ type: "text", text: pythonExecutionToText(m) }],
+					content: [{ type: "text", text: evalExecutionToText(m) }],
 					attribution: "user",
 					timestamp: m.timestamp,
 				},
 			];
+		case "pythonExecution":
+			return convertOne({ ...m, role: "evalExecution", language: "py" }, interruptedNext);
 		case "fileMention": {
 			// One `fileMention` can mix `@notes.md` (text) and `@screenshot.png` (image)
 			// in the same turn (`generateFileMentionMessages` packs every `@…` into a

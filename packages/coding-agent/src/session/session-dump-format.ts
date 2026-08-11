@@ -20,8 +20,8 @@ import {
 	type CustomMessage,
 	type FileMentionMessage,
 	type HookMessage,
-	type PythonExecutionMessage,
-	pythonExecutionToText,
+	type EvalExecutionMessage,
+	evalExecutionToText,
 } from "./messages";
 
 /** Minimal tool shape for dump output (matches AgentTool fields used by formatSessionDumpText). */
@@ -159,11 +159,11 @@ function appendMarkdownTranscript(lines: string[], messages: readonly AgentMessa
 				lines.push(bashExecutionToText(bashMsg));
 				lines.push("\n");
 			}
-		} else if (msg.role === "pythonExecution") {
-			const pythonMsg = msg as PythonExecutionMessage;
-			if (!pythonMsg.excludeFromContext) {
-				lines.push("## Python Execution\n");
-				lines.push(pythonExecutionToText(pythonMsg));
+		} else if (msg.role === "evalExecution") {
+			const evalMsg = msg as EvalExecutionMessage;
+			if (!evalMsg.excludeFromContext) {
+				lines.push(`## ${evalMsg.language} Execution\n`);
+				lines.push(evalExecutionToText(evalMsg));
 				lines.push("\n");
 			}
 		} else if (msg.role === "custom" || msg.role === "hookMessage") {

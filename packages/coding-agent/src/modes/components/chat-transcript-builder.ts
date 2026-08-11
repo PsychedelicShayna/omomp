@@ -270,16 +270,28 @@ export class ChatTranscriptBuilder {
 				break;
 			}
 			case "bashExecution": {
-				const component = new BashExecutionComponent(message.command, this.deps.ui, message.excludeFromContext);
+				const component = new BashExecutionComponent(
+					message.command,
+					this.deps.ui,
+					message.excludeFromContext ?? false,
+				);
 				if (message.output) component.appendOutput(message.output);
 				component.setComplete(message.exitCode, message.cancelled, { truncation: message.meta?.truncation });
 				this.container.addChild(component);
 				break;
 			}
+			case "evalExecution":
 			case "pythonExecution": {
-				const component = new EvalExecutionComponent(message.code, this.deps.ui, message.excludeFromContext);
+				const component = new EvalExecutionComponent(
+					message.code,
+					this.deps.ui,
+					message.excludeFromContext ?? false,
+					message.role === "evalExecution" ? message.language : "py",
+				);
 				if (message.output) component.appendOutput(message.output);
-				component.setComplete(message.exitCode, message.cancelled, { truncation: message.meta?.truncation });
+				component.setComplete(message.exitCode, message.cancelled ?? false, {
+					truncation: message.meta?.truncation,
+				});
 				this.container.addChild(component);
 				break;
 			}
