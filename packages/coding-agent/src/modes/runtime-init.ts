@@ -134,6 +134,8 @@ export async function initializeExtensions(session: AgentSession, options: Initi
 			reload: async () => {
 				await session.reload();
 			},
+			applyRuntimeModelLoadout: loadout => session.applyRuntimeModelLoadout(loadout),
+			invalidatePromptCache: () => session.invalidatePromptCache(),
 			compact: instructionsOrOptions => runExtensionCompact(session, instructionsOrOptions),
 		},
 		uiContext,

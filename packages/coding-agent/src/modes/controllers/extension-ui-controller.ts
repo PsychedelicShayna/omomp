@@ -206,6 +206,8 @@ export class ExtensionUiController {
 				await this.ctx.reloadTodos();
 				this.ctx.showStatus("Reloaded session");
 			},
+			applyRuntimeModelLoadout: loadout => this.ctx.session.applyRuntimeModelLoadout(loadout),
+			invalidatePromptCache: () => this.ctx.session.invalidatePromptCache(),
 			newSession: async options => {
 				this.ctx.clearTransientSessionUi();
 
@@ -439,6 +441,8 @@ export class ExtensionUiController {
 				await this.ctx.reloadTodos();
 				this.ctx.showStatus("Reloaded session");
 			},
+			applyRuntimeModelLoadout: loadout => this.ctx.session.applyRuntimeModelLoadout(loadout),
+			invalidatePromptCache: () => this.ctx.session.invalidatePromptCache(),
 			newSession: async options => {
 				this.ctx.clearTransientSessionUi();
 

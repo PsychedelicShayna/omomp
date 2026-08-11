@@ -101,10 +101,10 @@ import { type AdvisorConfig, type AdvisorRuntimeStatus, loadAdvisorTranscriptCos
 import { type AsyncJob, AsyncJobManager } from "../async";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
 import type { ModelRegistry } from "../config/model-registry";
-import type { ResolvedModelRoleValue } from "../config/model-resolver";
+import { type ResolvedModelRoleValue, resolveModelOverride } from "../config/model-resolver";
 import { expandPromptTemplate, type PromptTemplate } from "../config/prompt-templates";
 import { buildServiceTierByFamily } from "../config/service-tier";
-import type { Settings, SkillsSettings } from "../config/settings";
+import { Settings, type SkillsSettings } from "../config/settings";
 import { onAppendOnlyModeChanged, onModelRolesChanged } from "../config/settings";
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
 import { getFileSnapshotStore } from "../edit/file-snapshot-store";
@@ -136,7 +136,7 @@ import type {
 import { emitSessionShutdownEvent } from "../extensibility/extensions";
 import { ManagedTimers } from "../extensibility/extensions/managed-timers";
 import { createExtensionModelQuery } from "../extensibility/extensions/model-api";
-import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
+import type { CompactOptions, ContextUsage, RuntimeModelLoadout } from "../extensibility/extensions/types";
 import type { HookCommandContext } from "../extensibility/hooks/types";
 import type { Skill, SkillWarning } from "../extensibility/skills";
 import { expandSlashCommand, type FileSlashCommand } from "../extensibility/slash-commands";
@@ -933,8 +933,12 @@ export class AgentSession {
 			isStreaming: () => this.isStreaming,
 		};
 		const evalToolSession: ToolSession = config.toolSession ?? {
-			get cwd() { return config.sessionManager.getCwd(); },
-			get additionalDirectories() { return config.sessionManager.getAdditionalDirectories(); },
+			get cwd() {
+				return config.sessionManager.getCwd();
+			},
+			get additionalDirectories() {
+				return config.sessionManager.getAdditionalDirectories();
+			},
 			hasUI: false,
 			getSessionFile: () => config.sessionManager.getSessionFile() ?? null,
 			getSessionId: () => config.sessionManager.getSessionId?.() ?? null,
@@ -5575,6 +5579,8 @@ export class AgentSession {
 			reload: async () => {
 				await this.reload();
 			},
+			applyRuntimeModelLoadout: loadout => this.applyRuntimeModelLoadout(loadout),
+			invalidatePromptCache: () => this.invalidatePromptCache(),
 			getSystemPrompt: () => this.systemPrompt,
 			setInterval: (callback, ms, ...args) => this.#fallbackTimers().setInterval(callback, ms, ...args),
 			setTimeout: (callback, ms, ...args) => this.#fallbackTimers().setTimeout(callback, ms, ...args),
@@ -6603,6 +6609,76 @@ export class AgentSession {
 	// =========================================================================
 	// Model Management
 	// =========================================================================
+
+	/** Apply or clear the session's volatile model loadout as one idle-only transition. */
+	async applyRuntimeModelLoadout(loadout: RuntimeModelLoadout | undefined): Promise<void> {
+		if (this.isStreaming) throw new AgentBusyError();
+
+		let targetModel = this.model;
+		if (loadout) {
+			const candidateSettings = Settings.isolated({
+				modelRoles: loadout.modelRoles,
+				"retry.fallbackChains": loadout.retryFallbackChains,
+				"task.agentModelOverrides": loadout.taskAgentModelOverrides,
+			});
+			const selectors = [
+				loadout.mainModel,
+				...Object.values(loadout.modelRoles),
+				...Object.values(loadout.retryFallbackChains).flat(),
+				...Object.values(loadout.taskAgentModelOverrides),
+			];
+			for (const selector of selectors) {
+				const resolved = resolveModelOverride([selector], this.#modelRegistry, candidateSettings);
+				if (!resolved.model) throw new Error(`Runtime loadout contains an unresolved model selector: ${selector}`);
+			}
+			targetModel = resolveModelOverride([loadout.mainModel], this.#modelRegistry, candidateSettings).model;
+			if (!targetModel) throw new Error(`Runtime loadout main model did not resolve: ${loadout.mainModel}`);
+		}
+
+		const previousOverrides = this.settings.getRuntimeModelOverrides();
+		const previousModel = this.model;
+		const previousPromptCacheKey = this.agent.promptCacheKey;
+		const previousInheritedPromptCacheKey = this.#inheritedProviderPromptCacheKey;
+		try {
+			this.settings.applyRuntimeOverridesAtomically(
+				loadout
+					? {
+							modelRoles: loadout.modelRoles,
+							retryFallbackChains: loadout.retryFallbackChains,
+							taskAgentModelOverrides: loadout.taskAgentModelOverrides,
+						}
+					: undefined,
+			);
+			if (!loadout) {
+				const restoredDefault = this.settings.getModelRole("default");
+				if (restoredDefault) {
+					targetModel = resolveModelOverride([restoredDefault], this.#modelRegistry, this.settings).model;
+					if (!targetModel) {
+						throw new Error(`Restored default model did not resolve: ${restoredDefault}`);
+					}
+				}
+			}
+			if (targetModel && (!previousModel || !modelsAreEqual(previousModel, targetModel))) {
+				await this.#setModelWithProviderSessionReset(targetModel);
+			}
+			this.invalidatePromptCache();
+		} catch (error) {
+			this.settings.applyRuntimeOverridesAtomically(previousOverrides);
+			if (previousModel && (!this.model || !modelsAreEqual(this.model, previousModel))) {
+				await this.#setModelWithProviderSessionReset(previousModel);
+			}
+			this.agent.promptCacheKey = previousPromptCacheKey;
+			this.#inheritedProviderPromptCacheKey = previousInheritedPromptCacheKey;
+			throw error;
+		}
+	}
+
+	/** Replace provider prompt-cache identity before the next request. */
+	invalidatePromptCache(): void {
+		if (this.isStreaming) throw new AgentBusyError();
+		this.#inheritedProviderPromptCacheKey = undefined;
+		this.agent.promptCacheKey = Bun.randomUUIDv7();
+	}
 
 	/**
 	 * Set model directly.
