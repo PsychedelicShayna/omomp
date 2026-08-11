@@ -39,6 +39,7 @@ import type {
 	Extension,
 	ExtensionAPI,
 	ExtensionContext,
+	ExtensionEvalBackend,
 	ExtensionFactory,
 	ExtensionRuntime as IExtensionRuntime,
 	LoadExtensionsResult,
@@ -72,6 +73,11 @@ export class ExtensionRuntimeNotInitializedError extends Error {
 export class ExtensionRuntime implements IExtensionRuntime {
 	flagValues = new Map<string, boolean | string>();
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; sourceId: string }> = [];
+	pendingEvalBackendRegistrations: ExtensionEvalBackend[] = [];
+
+	registerEvalBackend(backend: ExtensionEvalBackend): void {
+		this.pendingEvalBackendRegistrations.push(backend);
+	}
 
 	registerProvider(name: string, config: ProviderConfig, sourceId: string): void {
 		this.pendingProviderRegistrations.push({ name, config, sourceId });
@@ -148,7 +154,7 @@ export class ExtensionRuntime implements IExtensionRuntime {
  * Registration methods write to the extension object.
  * Action methods delegate to the shared runtime.
  */
-class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
+class ConcreteExtensionAPI implements ExtensionAPI {
 	readonly logger = logger;
 	readonly typebox = TypeBox;
 	readonly arktype = type;
@@ -174,6 +180,10 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 		this.extension.handlers.set(event, list);
 	}
 
+
+	registerEvalBackend(backend: ExtensionEvalBackend): void {
+		this.runtime.registerEvalBackend(backend);
+	}
 	registerTool<TParams extends TSchema = TSchema, TDetails = unknown>(tool: ToolDefinition<TParams, TDetails>): void {
 		this.extension.tools.set(tool.name, {
 			definition: tool,

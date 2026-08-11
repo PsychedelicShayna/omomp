@@ -95,40 +95,43 @@ describe("AgentSession user shortcut hooks", () => {
 		});
 	});
 
-	it("invokes user_python hook and honors replacement result", async () => {
+	it("invokes user_eval hook and honors replacement result", async () => {
 		const replacement = {
 			output: "hooked python output",
 			exitCode: 0,
 			cancelled: false,
 			truncated: false,
+			artifactId: undefined,
 			totalLines: 1,
 			totalBytes: 20,
 			outputLines: 1,
 			outputBytes: 20,
 			displayOutputs: [],
-			stdinRequested: false,
 		};
-		const emitUserPython = vi.fn().mockResolvedValue({ result: replacement });
+		const emitUserEval = vi.fn().mockResolvedValue({ result: replacement });
 		const extensionRunner = {
-			hasHandlers: vi.fn((eventType: string) => eventType === "user_python"),
-			emitUserPython,
+			hasHandlers: vi.fn((eventType: string) => eventType === "user_eval"),
+			emitUserEval,
 		} as unknown as ExtensionRunner;
 		const executePythonSpy = vi.spyOn(pythonExecutor, "executePython");
 
 		createSession(extensionRunner);
-		const result = await session.executePython("print('hi')", undefined, { excludeFromContext: true });
+		const result = await session.executeEval("py", "print('hi')", undefined, { excludeFromContext: true });
 
-		expect(emitUserPython).toHaveBeenCalledWith({
-			type: "user_python",
+		expect(emitUserEval).toHaveBeenCalledWith({
+			type: "user_eval",
+			language: "py",
+			alias: "py",
 			code: "print('hi')",
 			excludeFromContext: true,
 			cwd: expect.any(String),
 		});
 		expect(executePythonSpy).not.toHaveBeenCalled();
 		expect(result).toEqual(replacement);
-		const pythonMessage = session.messages.at(-1);
-		expect(pythonMessage?.role).toBe("pythonExecution");
-		expect(pythonMessage).toMatchObject({
+		const evalMessage = session.messages.at(-1);
+		expect(evalMessage?.role).toBe("evalExecution");
+		expect(evalMessage).toMatchObject({
+			language: "py",
 			output: "hooked python output",
 			excludeFromContext: true,
 		});
@@ -136,9 +139,9 @@ describe("AgentSession user shortcut hooks", () => {
 
 	it("falls back to normal execution when hook does not return a replacement", async () => {
 		const extensionRunner = {
-			hasHandlers: vi.fn((eventType: string) => eventType === "user_bash" || eventType === "user_python"),
+			hasHandlers: vi.fn((eventType: string) => eventType === "user_bash" || eventType === "user_eval"),
 			emitUserBash: vi.fn().mockResolvedValue({}),
-			emitUserPython: vi.fn().mockResolvedValue(undefined),
+			emitUserEval: vi.fn().mockResolvedValue(undefined),
 		} as unknown as ExtensionRunner;
 		vi.spyOn(bashExecutor, "executeBash").mockResolvedValue({
 			output: "bash fallback",
@@ -165,7 +168,7 @@ describe("AgentSession user shortcut hooks", () => {
 
 		createSession(extensionRunner);
 		const bashResult = await session.executeBash("pwd", undefined, { excludeFromContext: true });
-		const pythonResult = await session.executePython("1+1", undefined, { excludeFromContext: false });
+		const pythonResult = await session.executeEval("py", "1+1", undefined, { excludeFromContext: false });
 
 		expect(bashResult.output).toBe("bash fallback");
 		expect(pythonResult.output).toBe("python fallback");
@@ -175,7 +178,7 @@ describe("AgentSession user shortcut hooks", () => {
 			session.messages.some(message => message.role === "bashExecution" && message.excludeFromContext === true),
 		).toBe(true);
 		expect(
-			session.messages.some(message => message.role === "pythonExecution" && message.excludeFromContext === false),
+			session.messages.some(message => message.role === "evalExecution" && message.excludeFromContext === false),
 		).toBe(true);
 	});
 
