@@ -28,6 +28,7 @@ interface AgentFrontmatter {
 	thinkingLevel?: string;
 	blocking?: boolean;
 	prewalk?: boolean | string;
+	advisor?: boolean | string;
 }
 
 interface EmbeddedAgentDef {
