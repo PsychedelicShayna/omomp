@@ -6,6 +6,22 @@ This repo contains multiple packages, but **`packages/coding-agent/`** is the pr
 
 **Terminology**: When the user says "agent" or asks "why is agent doing X", they mean the **coding-agent package implementation**, not you (the assistant). The coding-agent is a CLI tool — questions about its behavior refer to code in `packages/coding-agent/`, not your current session.
 
+## Binary install (HARD RULE)
+
+- **NEVER replace, overwrite, move, or reinstall the live `omp` binary** on
+  `PATH` (typically `~/.local/bin/omp`). That is Shayna's daily driver. Touching
+  it is a page-out, not a convenience.
+- When this fork is built for local use, install the artifact as a **separate**
+  binary named **`om-omp`** (e.g. `~/.local/bin/om-omp`).
+- Allowed: write `packages/coding-agent/dist/omp` (build output), copy/link that
+  to `om-omp`, run via `bun run dev` / `bun --cwd=packages/coding-agent src/cli.ts`.
+- Forbidden without an explicit order that names `omp` as the install target:
+  `install … omp`, `cp … ~/.local/bin/omp`, `ln -sf … omp`, package-manager
+  global install onto the `omp` name, or any "replace the live binary" step.
+- If a previous mistake left a backup (e.g. `omp-*-backup-*`), restore `omp`
+  from it immediately and keep fork builds only on `om-omp`.
+
+
 ### Package Structure
 
 | Package                 | Description                                                                             |
