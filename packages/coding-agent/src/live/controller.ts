@@ -5,7 +5,7 @@ import { AudioCapture } from "@oh-my-pi/pi-natives";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
 import type { AgentSessionEvent } from "../session/agent-session-events";
-import { LIVE_DELEGATION_MESSAGE_TYPE } from "../session/messages";
+import { LIVE_DELEGATION_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
 import agentFinalMessageTemplate from "./prompts/agent-final-message.md" with { type: "text" };
 import liveInstructionsTemplate from "./prompts/live-instructions.md" with { type: "text" };
 import {
@@ -283,7 +283,7 @@ export class LiveSessionController {
 				this.#finishTranscript(event.turn.role, event.turn.transcript);
 				break;
 			case "delegation.created":
-				this.#handleDelegation(event);
+				void this.#handleDelegation(event).catch(cause => this.#reportFailure(errorFrom(cause)));
 				break;
 			case "error":
 				this.#reportFailure(new Error(event.message));
@@ -291,7 +291,13 @@ export class LiveSessionController {
 		}
 	}
 
-	#handleDelegation(event: Extract<LiveServerEvent, { type: "delegation.created" }>): void {
+	/**
+	 * Deliver a Codex Realtime coding handoff to the main agent session.
+	 * Always aborts any in-flight backend turn first so the handoff is a fresh
+	 * prompt, not a steer queued under `interruptMode: wait` (live speech must
+	 * barge in immediately).
+	 */
+	async #handleDelegation(event: Extract<LiveServerEvent, { type: "delegation.created" }>): Promise<void> {
 		let request = "";
 		for (const content of event.item.content) {
 			if (content.type !== "input_text") continue;
@@ -299,19 +305,26 @@ export class LiveSessionController {
 		}
 		request = request.trim();
 		if (!request) return;
-		this.#activeDelegationId = event.item.id;
+
+		// Tear down the current turn before claiming this delegation id. Setting
+		// the id earlier would attribute the aborted turn's terminal agent_end to
+		// the new handoff.
 		this.#emitPhase("working");
-		void this.#session
-			.sendCustomMessage(
-				{
-					customType: LIVE_DELEGATION_MESSAGE_TYPE,
-					content: request,
-					display: true,
-					attribution: "agent",
-				},
-				{ triggerTurn: true },
-			)
-			.catch(cause => this.#reportFailure(errorFrom(cause)));
+		if (this.#session.isStreaming || this.#session.isBashRunning || this.#session.isEvalRunning) {
+			await this.#session.abort({ reason: USER_INTERRUPT_LABEL });
+		}
+		if (this.#stopped) return;
+
+		this.#activeDelegationId = event.item.id;
+		await this.#session.sendCustomMessage(
+			{
+				customType: LIVE_DELEGATION_MESSAGE_TYPE,
+				content: request,
+				display: true,
+				attribution: "agent",
+			},
+			{ triggerTurn: true },
+		);
 	}
 
 	#handleSessionEvent(event: AgentSessionEvent): void {
