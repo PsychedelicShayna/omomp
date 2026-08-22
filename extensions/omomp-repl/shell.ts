@@ -60,7 +60,7 @@ class PersistentShell {
 			this.#fishEnv = { ...process.env, ...this.profile.env, TERM: "dumb" };
 		}
 		const marker = `__BOMP_FISH_${++this.#sequence}_${crypto.randomUUID()}__`;
-		const script = `${code}\nset -l __bomp_status $status\nprintf '\\\\0%s\\\\0%d\\\\0%s\\\\0' ${shellQuote(marker)} $__bomp_status (pwd)\nenv -0`;
+		const script = `${code}\nset -l __omomp_status $status\nprintf '\\\\0%s\\\\0%d\\\\0%s\\\\0' ${shellQuote(marker)} $__omomp_status (pwd)\nenv -0`;
 		const command = ["stty -echo; exec", shellQuote(this.executable), ...(this.profile.args ?? []).map(shellQuote), "-c", shellQuote(script)].join(" ");
 		const child = Bun.spawn(["/usr/bin/script", "-qefc", command, "/dev/null"], {
 			cwd: this.#fishCwd,

@@ -31,7 +31,7 @@ type KernelRow = {
 };
 
 /** No feature writes a kernel status key, so the dashboard owns this one alone. */
-const VIEW_KEY = "bomp-kernel-view";
+const VIEW_KEY = "omomp-kernel-view";
 const CONFIRM_KEY = "tui.select.confirm" as const;
 const INTERRUPT_KEY = "i";
 const RESTART_KEY = "r";
@@ -115,7 +115,7 @@ export function createKernelDashboard(ctx: ExtensionContext): KernelDashboard {
 				warning: notice(),
 				rows: mount.rows,
 				selectedId: mount.selectedId,
-				emptyText: 'No kernels — map an alias under "kernelAliases" in bomp.json',
+				emptyText: 'No kernels — map an alias under "kernelAliases" in omomp.json',
 				renderRow: (row, selected) =>
 					`${dashboardCursor(selected)} ${dashboardStateGlyph(ROW_STATE[row.state])} ` +
 					`${padDashboardText(row.displayName, column)}${dashboardMeta(row.state)}`,

@@ -1,29 +1,27 @@
-// bomp-persona state: personas and per-session selections, persisted in
-// <agentDir>/bomp-persona.json. Self-contained; no other extension reads it.
+// omomp-loadout state: named runtime model loadouts and the active selection,
+// persisted in <agentDir>/omomp-loadout.json. Self-contained.
 import { copyFile, mkdir, open, readFile, rename } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import type { RuntimeModelLoadout } from "/home/shayna/omp/packages/coding-agent/src/extensibility/extensions/types.ts";
 
-export type PersonaMode = "replace" | "prepend" | "append" | "literal-substitute";
-export type PersonaSource = { kind: "inline"; content: string } | { kind: "file"; path: string };
-export interface PersonaDefinition { mode: PersonaMode; source: PersonaSource; literal?: string; inheritToTasks?: boolean }
 export interface BompState {
 	schemaVersion: 1;
-	personas: Record<string, PersonaDefinition>;
-	sessionPersonas: Record<string, string>;
+	loadouts: Record<string, RuntimeModelLoadout>;
+	activeLoadout: string | null;
 }
-export const emptyBompState = (): BompState => ({ schemaVersion: 1, personas: {}, sessionPersonas: {} });
+export const emptyBompState = (): BompState => ({ schemaVersion: 1, loadouts: {}, activeLoadout: null });
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const stringRecord = (v: unknown): v is Record<string, string> => isRecord(v) && Object.values(v).every(x => typeof x === "string");
-const persona = (v: unknown): v is PersonaDefinition => isRecord(v) && ["replace", "prepend", "append", "literal-substitute"].includes(String(v.mode)) && isRecord(v.source) && ((v.source.kind === "inline" && typeof v.source.content === "string") || (v.source.kind === "file" && typeof v.source.path === "string")) && (v.literal === undefined || typeof v.literal === "string") && (v.inheritToTasks === undefined || typeof v.inheritToTasks === "boolean");
+const loadout = (v: unknown): v is RuntimeModelLoadout => isRecord(v) && typeof v.name === "string" && typeof v.mainModel === "string" && stringRecord(v.modelRoles) && isRecord(v.retryFallbackChains) && Object.values(v.retryFallbackChains).every(x => Array.isArray(x) && x.every(y => typeof y === "string")) && stringRecord(v.taskAgentModelOverrides);
 export function validateBompState(v: unknown): BompState {
-	if (!isRecord(v) || v.schemaVersion !== 1 || !isRecord(v.personas) || !Object.values(v.personas).every(persona) || !stringRecord(v.sessionPersonas)) throw new Error("Invalid schema-v1 bomp-persona.json");
+	if (!isRecord(v) || v.schemaVersion !== 1 || !isRecord(v.loadouts) || !Object.values(v.loadouts).every(loadout) || (v.activeLoadout !== null && typeof v.activeLoadout !== "string")) throw new Error("Invalid schema-v1 omomp-loadout.json");
 	return v as unknown as BompState;
 }
 
 /** Active agent directory: profile-aware in-process, plain ~/.omp/agent otherwise. */
 export function agentDir(): string { return process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".omp", "agent"); }
-export const defaultStatePath = (): string => join(agentDir(), "bomp-persona.json");
+export const defaultStatePath = (): string => join(agentDir(), "omomp-loadout.json");
 
 export class BompStateStore {
 	readonly backupPath: string;

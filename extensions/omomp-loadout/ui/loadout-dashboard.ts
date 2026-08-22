@@ -32,8 +32,8 @@ type LoadoutSnapshot = {
 	active?: string;
 };
 
-/** `loadout.ts` owns `bomp-loadout`; the dashboard owns this key alone. */
-const VIEW_KEY = "bomp-loadout-view";
+/** `loadout.ts` owns `omomp-loadout`; the dashboard owns this key alone. */
+const VIEW_KEY = "omomp-loadout-view";
 const CONFIRM_KEY = "tui.select.confirm" as const;
 const OFF_KEY = "o";
 const MAX_NAME_COLUMN = 24;
@@ -94,7 +94,7 @@ export function createLoadoutDashboard(feature: LoadoutFeature, ctx: ExtensionCo
 				warning: actionError,
 				rows: mount.rows,
 				selectedId: mount.selectedId,
-				emptyText: 'No loadouts yet — add one under "loadouts" in bomp.json',
+				emptyText: 'No loadouts yet — add one under "loadouts" in omomp.json',
 				renderRow: (row, selected) =>
 					`${dashboardCursor(selected)} ${dashboardStateGlyph(row.active ? "active" : "inactive")} ` +
 					`${padDashboardText(row.id, column)}${dashboardMeta(row.loadout.mainModel)}`,

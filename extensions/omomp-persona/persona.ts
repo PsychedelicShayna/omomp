@@ -21,8 +21,8 @@ const warnings = new Map<string, string>();
 const annotated = new Set<string>();
 function ordered(state: Record<string, PersonaDefinition>) { return Object.entries(state).sort(([a], [b]) => a.localeCompare(b)); }
 function setUi(ctx: ExtensionCommandContext, active?: string, warning?: string) {
-	ctx.ui.setStatus("bomp-persona", active ? `persona: ${active}` : undefined);
-	ctx.ui.setWidget("bomp-persona", warning ? [`Persona warning: ${warning}`] : []);
+	ctx.ui.setStatus("omomp-persona", active ? `persona: ${active}` : undefined);
+	ctx.ui.setWidget("omomp-persona", warning ? [`Persona warning: ${warning}`] : []);
 }
 function sessionId(ctx: ExtensionCommandContext) { return ctx.sessionManager.getSessionId(); }
 function validName(name: string) { if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) throw new Error("Persona name must contain only letters, numbers, '.', '_' or '-'"); }
@@ -51,7 +51,7 @@ export function createPersonaFeature(store: BompStateStore, agentRoot: string, a
 		await source(definition);
 		state.sessionPersonas[id] = name; await store.write(state);
 		warnings.delete(id); annotated.forEach(key => { if (key.startsWith(`${id}\0`)) annotated.delete(key); });
-		api?.appendEntry("bomp_persona", { name, sessionId: id, metadata: definition.inheritToTasks ? { inheritToTasks: true } : {} });
+		api?.appendEntry("omomp_persona", { name, sessionId: id, metadata: definition.inheritToTasks ? { inheritToTasks: true } : {} });
 		ctx.invalidatePromptCache?.(); setUi(ctx, name); return `Persona '${name}' active for this session.`;
 	}
 	return {
@@ -103,18 +103,18 @@ export function createPersonaFeature(store: BompStateStore, agentRoot: string, a
 					}
 				}
 				warnings.delete(id);
-				ctx.ui.setStatus("bomp-persona", `persona: ${name}`);
-				ctx.ui.setWidget("bomp-persona", []);
+				ctx.ui.setStatus("omomp-persona", `persona: ${name}`);
+				ctx.ui.setWidget("omomp-persona", []);
 				return { systemPrompt };
 			} catch (error) {
 				const warning = error instanceof Error ? error.message : String(error);
 				warnings.set(id, warning);
-				ctx.ui.setStatus("bomp-persona", `persona: ${name} (warning)`);
-				ctx.ui.setWidget("bomp-persona", [`Persona warning: ${warning}`]);
+				ctx.ui.setStatus("omomp-persona", `persona: ${name} (warning)`);
+				ctx.ui.setWidget("omomp-persona", [`Persona warning: ${warning}`]);
 				const key = `${id}\0${name}\0${warning}`;
 				if (!annotated.has(key)) {
 					annotated.add(key);
-					api?.appendEntry("bomp_persona_warning", { command: `/persona use ${name}`, name, warning });
+					api?.appendEntry("omomp_persona_warning", { command: `/persona use ${name}`, name, warning });
 				}
 				return;
 			}

@@ -1,19 +1,19 @@
-// bomp-persona: session-scoped system-prompt personas.
+// omomp-persona: session-scoped system-prompt personas.
 // Self-contained extension directory — drag into any omp extensions dir to
-// enable, drag out to disable. State lives in <agentDir>/bomp-persona.json.
+// enable, drag out to disable. State lives in <agentDir>/omomp-persona.json.
 import type { ExtensionAPI, ExtensionCommandContext } from "/home/shayna/omp/packages/coding-agent/src/extensibility/extensions/types.ts";
 import { createPersonaFeature, parsePersonaDefinition } from "./persona.ts";
 import { agentDir, BompStateStore, defaultStatePath } from "./state.ts";
 import { createPersonaDashboard } from "./ui/persona-dashboard.ts";
 import { output, report, words } from "./util.ts";
 
-export default function bompPersona(api: ExtensionAPI): void {
+export default function omomp_persona(api: ExtensionAPI): void {
 	const store = new BompStateStore(defaultStatePath());
 	const personas = createPersonaFeature(store, agentDir(), api);
 	api.on("before_agent_start", (event, ctx) => personas.apply(event, ctx));
 
 	api.registerCommand("persona", {
-		description: "Manage session-scoped bomp personas",
+		description: "Manage session-scoped omomp personas",
 		async handler(args: string, ctx: ExtensionCommandContext) {
 			const [command, name] = words(args); const id = ctx.sessionManager.getSessionId();
 			if (!command) {

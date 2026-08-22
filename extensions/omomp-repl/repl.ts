@@ -60,7 +60,7 @@ export const createReplExtension: ExtensionFactory = api => {
 			registered = true;
 			if (typeof api.registerEvalBackend !== "function") {
 				ctx.ui.notify(
-					"bomp: this omp build lacks registerEvalBackend — shell/kernel REPL backends disabled (builtins still work)",
+					"omomp: this omp build lacks registerEvalBackend — shell/kernel REPL backends disabled (builtins still work)",
 					"warning",
 				);
 			} else {
@@ -82,7 +82,7 @@ export const createReplExtension: ExtensionFactory = api => {
 						}
 					} catch (error) {
 						registered = false;
-						ctx.ui.notify(`bomp: REPL backend discovery failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+						ctx.ui.notify(`omomp: REPL backend discovery failed: ${error instanceof Error ? error.message : String(error)}`, "error");
 					}
 				})();
 			}
@@ -90,7 +90,7 @@ export const createReplExtension: ExtensionFactory = api => {
 		unsubscribeInput?.();
 		unsubscribeInput = ctx.ui.onTerminalInput(data => {
 			if (active !== "agent" && data === "\x1b") {
-				active = "agent"; ctx.ui.setStatus("bomp-repl", undefined); ctx.ui.notify("Returned to agent", "info");
+				active = "agent"; ctx.ui.setStatus("omomp-repl", undefined); ctx.ui.notify("Returned to agent", "info");
 			}
 			return undefined;
 		});
@@ -117,7 +117,7 @@ export const createReplExtension: ExtensionFactory = api => {
 				return;
 			}
 			if (!setReplBackend(requested)) { ctx.ui.notify(`Unavailable REPL backend: ${requested}`, "error"); return; }
-			ctx.ui.setStatus("bomp-repl", active === "agent" ? undefined : `REPL ${active}`);
+			ctx.ui.setStatus("omomp-repl", active === "agent" ? undefined : `REPL ${active}`);
 			ctx.ui.notify(active === "agent" ? "Returned to agent" : `REPL backend: ${active}`, "info");
 		},
 	});
@@ -143,14 +143,14 @@ export const createReplExtension: ExtensionFactory = api => {
 		description: "Cycle agent and available REPL backends",
 		handler(ctx): void {
 			const selected = cycleReplBackend();
-			ctx.ui.setStatus("bomp-repl", selected === "agent" ? undefined : `REPL ${selected}`);
+			ctx.ui.setStatus("omomp-repl", selected === "agent" ? undefined : `REPL ${selected}`);
 			ctx.ui.notify(selected === "agent" ? "Agent input" : `REPL backend: ${selected}`, "info");
 		},
 	});
 
 	api.on("session_shutdown", (_event, ctx) => {
 		unsubscribeInput?.(); unsubscribeInput = undefined; active = "agent"; available = [...DEFAULT_BACKENDS];
-		ctx.ui.setStatus("bomp-repl", undefined);
+		ctx.ui.setStatus("omomp-repl", undefined);
 	});
 };
 

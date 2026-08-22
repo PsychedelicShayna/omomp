@@ -32,10 +32,10 @@ type PersonaSnapshot = {
 };
 
 /**
- * `persona.ts` owns the `bomp-persona` status and warning widget. The dashboard
+ * `persona.ts` owns the `omomp-persona` status and warning widget. The dashboard
  * owns this key alone so the two never overwrite each other.
  */
-const VIEW_KEY = "bomp-persona-view";
+const VIEW_KEY = "omomp-persona-view";
 const CONFIRM_KEY = "tui.select.confirm" as const;
 const OFF_KEY = "o";
 /** Widest name column before the row falls back to truncation. */

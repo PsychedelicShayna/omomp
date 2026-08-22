@@ -1,27 +1,27 @@
-// bomp-loadout state: named runtime model loadouts and the active selection,
-// persisted in <agentDir>/bomp-loadout.json. Self-contained.
+// omomp-repl state: shell profiles and Jupyter kernel aliases, persisted in
+// <agentDir>/omomp-repl.json. Self-contained.
 import { copyFile, mkdir, open, readFile, rename } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { RuntimeModelLoadout } from "/home/shayna/omp/packages/coding-agent/src/extensibility/extensions/types.ts";
 
+export interface ShellProfile { command: string; args?: string[]; env?: Record<string, string> }
 export interface BompState {
 	schemaVersion: 1;
-	loadouts: Record<string, RuntimeModelLoadout>;
-	activeLoadout: string | null;
+	shellProfiles: Record<string, ShellProfile>;
+	kernelAliases: Record<string, string>;
 }
-export const emptyBompState = (): BompState => ({ schemaVersion: 1, loadouts: {}, activeLoadout: null });
+export const emptyBompState = (): BompState => ({ schemaVersion: 1, shellProfiles: {}, kernelAliases: {} });
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const stringRecord = (v: unknown): v is Record<string, string> => isRecord(v) && Object.values(v).every(x => typeof x === "string");
-const loadout = (v: unknown): v is RuntimeModelLoadout => isRecord(v) && typeof v.name === "string" && typeof v.mainModel === "string" && stringRecord(v.modelRoles) && isRecord(v.retryFallbackChains) && Object.values(v.retryFallbackChains).every(x => Array.isArray(x) && x.every(y => typeof y === "string")) && stringRecord(v.taskAgentModelOverrides);
+const shell = (v: unknown): v is ShellProfile => isRecord(v) && typeof v.command === "string" && (v.args === undefined || (Array.isArray(v.args) && v.args.every(x => typeof x === "string"))) && (v.env === undefined || stringRecord(v.env));
 export function validateBompState(v: unknown): BompState {
-	if (!isRecord(v) || v.schemaVersion !== 1 || !isRecord(v.loadouts) || !Object.values(v.loadouts).every(loadout) || (v.activeLoadout !== null && typeof v.activeLoadout !== "string")) throw new Error("Invalid schema-v1 bomp-loadout.json");
+	if (!isRecord(v) || v.schemaVersion !== 1 || !isRecord(v.shellProfiles) || !Object.values(v.shellProfiles).every(shell) || !stringRecord(v.kernelAliases)) throw new Error("Invalid schema-v1 omomp-repl.json");
 	return v as unknown as BompState;
 }
 
 /** Active agent directory: profile-aware in-process, plain ~/.omp/agent otherwise. */
 export function agentDir(): string { return process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".omp", "agent"); }
-export const defaultStatePath = (): string => join(agentDir(), "bomp-loadout.json");
+export const defaultStatePath = (): string => join(agentDir(), "omomp-repl.json");
 
 export class BompStateStore {
 	readonly backupPath: string;
@@ -40,4 +40,9 @@ export class BompStateStore {
 		const dir = await open(dirname(this.path), "r"); try { await dir.sync(); } finally { await dir.close(); }
 	}
 	async update(fn: (state: BompState) => void): Promise<BompState> { const state = await this.read(); fn(state); await this.write(state); return state; }
+}
+
+export async function readReplProfiles(store: BompStateStore): Promise<Pick<BompState, "shellProfiles" | "kernelAliases">> {
+	const { shellProfiles, kernelAliases } = await store.read();
+	return { shellProfiles, kernelAliases };
 }

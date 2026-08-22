@@ -1,6 +1,6 @@
-// bomp-loadout: atomic runtime model loadout switching.
+// omomp-loadout: atomic runtime model loadout switching.
 // Self-contained extension directory — drag into any omp extensions dir to
-// enable, drag out to disable. State lives in <agentDir>/bomp-loadout.json.
+// enable, drag out to disable. State lives in <agentDir>/omomp-loadout.json.
 // Requires the patched omp build's ctx.applyRuntimeModelLoadout; on a stock
 // build /loadout use|off reports the missing capability instead of switching.
 import type { ExtensionAPI, ExtensionCommandContext } from "/home/shayna/omp/packages/coding-agent/src/extensibility/extensions/types.ts";
@@ -9,7 +9,7 @@ import { BompStateStore, defaultStatePath } from "./state.ts";
 import { createLoadoutDashboard } from "./ui/loadout-dashboard.ts";
 import { output, report, words } from "./util.ts";
 
-export default function bompLoadout(api: ExtensionAPI): void {
+export default function omomp_loadout(api: ExtensionAPI): void {
 	const store = new BompStateStore(defaultStatePath());
 	const loadouts = createLoadoutFeature(store);
 

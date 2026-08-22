@@ -24,8 +24,8 @@ type ReplBackendRow = {
 	active: boolean;
 };
 
-/** `repl.ts` owns the `bomp-repl` status; the dashboard owns this key alone. */
-const VIEW_KEY = "bomp-repl-view";
+/** `repl.ts` owns the `omomp-repl` status; the dashboard owns this key alone. */
+const VIEW_KEY = "omomp-repl-view";
 const CONFIRM_KEY = "tui.select.confirm" as const;
 const MAX_NAME_COLUMN = 24;
 const HEADLESS_ROWS = 40;
@@ -91,7 +91,7 @@ export function createReplDashboard(ctx: ExtensionContext): ReplDashboard {
 				warning: actionError,
 				rows: mount.rows,
 				selectedId: mount.selectedId,
-				emptyText: 'No REPL backends — add "shellProfiles" or "kernelAliases" to bomp.json',
+				emptyText: 'No REPL backends — add "shellProfiles" or "kernelAliases" to omomp.json',
 				renderRow: (row, selected) =>
 					`${dashboardCursor(selected)} ${dashboardStateGlyph(row.active ? "active" : "inactive")} ` +
 					`${padDashboardText(row.label, column)}${dashboardMeta(row.kind)}`,

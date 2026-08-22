@@ -11,8 +11,8 @@ export interface LoadoutFeature {
 	off(ctx: ExtensionCommandContext): Promise<string>;
 }
 function setUi(ctx: ExtensionCommandContext, name?: string) {
-	ctx.ui.setStatus("bomp-loadout", name ? `loadout: ${name}` : undefined);
-	ctx.ui.setWidget("bomp-loadout", name ? [`Active model loadout: ${name}`] : []);
+	ctx.ui.setStatus("omomp-loadout", name ? `loadout: ${name}` : undefined);
+	ctx.ui.setWidget("omomp-loadout", name ? [`Active model loadout: ${name}`] : []);
 }
 export function createLoadoutFeature(store: BompStateStore): LoadoutFeature {
 	async function data(): Promise<LoadoutData> {
