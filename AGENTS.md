@@ -249,6 +249,9 @@ For the bash tool specifically:
 - NEVER commit unless asked.
 - Never use `tsc`/`npx tsc` — always `bun check`.
 - Merge commits (maintainer merges of PRs) follow: `Merge PR #<number>: <conventional PR subject> (@<author>)` — e.g. `Merge PR #6386: feat(catalog): add native Meta Model API provider (@eggpeat)`.
+- **Cargo parallelism**: always pass `-j 6` to cargo builds (e.g. `cargo build -j 6`,
+  `bun run build:native` should use `CARGO_BUILD_JOBS=6`). The machine has 20 cores;
+  unbounded cargo eats all of them and starves the session.
 
 ## Testing Guidance
 
