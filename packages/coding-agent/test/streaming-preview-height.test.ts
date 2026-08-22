@@ -11,6 +11,7 @@ import { previewWindowRows } from "@oh-my-pi/pi-coding-agent/tools/render-utils"
 import { TUI, visibleWidth } from "@oh-my-pi/pi-tui";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
+import { withoutTerminalMultiplexer } from "./helpers/terminal-multiplexer";
 
 // The streaming edit preview is a fixed-height tail window ("cursor"): the last
 // EDIT_STREAMING_PREVIEW_LINES rows of the recomputed diff are pinned to the
@@ -21,6 +22,8 @@ import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 // whole change segments grew and shrank tick to tick (the stutter), and the
 // earlier high-water fix padded the deficit with blank rows (the "large
 // rectangle that is half empty" regression). The tail window has neither.
+withoutTerminalMultiplexer();
+
 describe("streaming edit preview height (stable, full tail window)", () => {
 	const oldBlock = ["function foo() {", "  const x = 1;", "  return x;", "}"].join("\n");
 	const tail = ["", "function bar() {", "  return 2;", "}", "", "function baz() {", "  return 3;", "}", ""].join("\n");
@@ -130,7 +133,7 @@ describe("streaming edit preview height (stable, full tail window)", () => {
 	// Real TUI + virtual terminal harness: drives the component through the
 	// actual differential renderer so native scrollback (not just the in-memory
 	// component height) is exercised. Mirrors makeComponent's construction but
-	// swaps the stub for a live TUI wired to a ghostty-backed terminal and the
+	// swaps the stub for a live TUI wired to a kitty-vt-backed terminal and the
 	// drainable scheduler in place of wall-clock frame timers.
 	function makeTuiComponent(): {
 		component: ToolExecutionComponent;

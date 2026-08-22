@@ -77,6 +77,24 @@ export declare class FileLock {
   release(): void
 }
 
+/**
+ * Stateful incremental syntax highlighter for streamed code.
+ *
+ * Carries syntect parser state across [`HighlightStream::push`] calls so
+ * chunked highlighting of a growing buffer is byte-identical to highlighting
+ * the concatenated text in one call. Feed newline-terminated complete lines;
+ * only the final push may omit the trailing newline. An unresolved language
+ * echoes input unchanged.
+ */
+export declare class HighlightStream {
+  /** Create a stream for `lang`; an unknown language yields a passthrough. */
+  constructor(lang: string | undefined | null, colors: HighlightColors)
+  /** Whether the language resolved to a grammar; `false` means passthrough. */
+  get supported(): boolean
+  /** Highlight the next chunk and advance parser state. */
+  push(chunk: string): string
+}
+
 /** WebRTC peer that accepts 16 kHz mono PCM and renders remote Opus audio. */
 export declare class LiveWebRtcPeer {
   /**
@@ -235,6 +253,48 @@ export declare class Shell {
 }
 
 /**
+ * Dedicated writer thread for one terminal fd.
+ *
+ * Constructed by the TUI's `ProcessTerminal` around stdout. The fd is
+ * `dup(2)`'d at construction and closed on drop, so later manipulation of the
+ * original descriptor does not affect the pump.
+ */
+export declare class TtyWriter {
+  /**
+   * Start a pump thread for `fd` (typically 1). Fails on non-Unix hosts and
+   * when the descriptor cannot be duplicated.
+   */
+  constructor(fd: number)
+  /**
+   * Enqueue terminal output; never blocks. Returns the total bytes now
+   * pending (including this chunk).
+   *
+   * Reads the JS string as UTF-16 through the thread's scratch arena and
+   * transcodes it with `xutf` straight into the shared back buffer, so a
+   * warm writer costs no per-call heap allocation.
+   */
+  write(data: string): number
+  /** Bytes accepted but not yet written to the terminal. */
+  pending(): number
+  /** True once a write failed (dead PTY); queued output has been dropped. */
+  get dead(): boolean
+  /**
+   * Block the calling thread until the queue drains, the writer dies, or
+   * `timeout_ms` elapses. Returns true when fully drained. Exit paths only.
+   */
+  flushSync(timeoutMs: number): boolean
+  /**
+   * Flush (bounded by `flush_timeout_ms`), stop the pump thread, and join it.
+   *
+   * A pump stuck in a blocked `write(2)` (stalled-but-alive PTY consumer)
+   * cannot be joined without freezing the caller: when the bounded flush
+   * times out the thread is detached instead and its dup'd fd is leaked —
+   * closing it under a blocked write would race kernel fd reuse.
+   */
+  stop(flushTimeoutMs: number): void
+}
+
+/**
  * Install the bounded Tokio runtime napi-rs adopts for async exports and the
  * bounded Rayon global pool used by native parallel iterators.
  *
@@ -279,7 +339,7 @@ export declare function __ompInstallTokioRuntime(): void
  * `packages/natives/native/index.js` (which derives the name from
  * `package.json#version`).
  */
-export declare function __piNativesV17_3_5(): void
+export declare function __piNativesV18_0_0(): void
 
 /**
  * Apply ast-grep rewrite rules to matching files; honors `dryRun` and returns
@@ -630,15 +690,17 @@ export declare function cosineSimilarityPairs(vectors: Float64Array, count: numb
  * Count tokens in `input`.
  *
  * `input` may be a single string or an array of strings; an array returns
- * the sum across all elements (encoded in parallel via rayon when the global
- * pool is available). Always returns a single token total — use this for any
+ * the sum across all elements (counted in parallel when the global rayon pool
+ * is available). Always returns a single token total — use this for any
  * aggregate budget question without paying a per-element napi crossing.
  *
- * Uses ordinary encoding (no special-token handling), which is the right
- * choice for measuring user/model content rather than wire-protocol tokens.
- * Defaults to `o200k_base`; pass `Cl100kBase` for older `OpenAI` models.
+ * Measures user/model content, not wire-protocol tokens: BPE encodings
+ * use ordinary encoding (no special-token handling) and the Claude
+ * encodings count message content without the fixed per-message frame.
+ * Defaults to `o200k_base`; pass a `Claude*` encoding for exact Claude
+ * counts, or the matching family encoding for Qwen/DeepSeek/Kimi/GLM.
  */
-export declare function countTokens(input: string | Array<string>, encoding?: Encoding | undefined | null): number
+export declare function countTokens(input: string | string[], encoding?: Encoding | undefined | null): number
 
 export interface DesktopCapabilities {
   backend: string
@@ -853,7 +915,23 @@ export declare enum Encoding {
   /** GPT-4o / o1 / GPT-5 (default). */
   O200kBase = 'O200kBase',
   /** GPT-3.5 / GPT-4 / older. */
-  Cl100kBase = 'Cl100kBase'
+  Cl100kBase = 'Cl100kBase',
+  /** Claude 3 … Opus 4.6 (ctok v3 reconstruction). */
+  ClaudeV3 = 'ClaudeV3',
+  /** Claude Opus 4.7–4.9 (ctok v4.7 reconstruction). */
+  ClaudeV47 = 'ClaudeV47',
+  /** Claude Opus 5+ (ctok v5 reconstruction). */
+  ClaudeV5 = 'ClaudeV5',
+  /** Claude Sonnet/Fable 5+ (live-measured non-opus v5 frame). */
+  ClaudeV5Sonnet = 'ClaudeV5Sonnet',
+  /** Qwen 3.5 / 3.6 / 3.8 (248k vocabulary). */
+  Qwen3 = 'Qwen3',
+  /** `DeepSeek` V3 … V4 (identical base BPE). */
+  DeepSeekV3 = 'DeepSeekV3',
+  /** Kimi K2 … K3. */
+  KimiK2 = 'KimiK2',
+  /** GLM-5.x exact; GLM-4.x near-exact. */
+  Glm5 = 'Glm5'
 }
 
 /**
@@ -1382,6 +1460,31 @@ export declare enum MacOSAppearance {
 }
 
 /**
+ * Return the autocorrection macOS chooses for one completed-word range.
+ *
+ * Returns `null` when no confident correction exists or the service is
+ * unavailable.
+ * On macOS, the lookup runs on the dedicated spelling thread.
+ */
+export declare function macOSAutocorrectWord(text: string, start: number, length: number): Promise<string | null>
+
+/**
+ * Find every misspelled word using the active macOS dictionaries.
+ *
+ * Returns an empty list when Apple's spelling service is unavailable.
+ * On macOS, the check runs on the dedicated spelling thread.
+ */
+export declare function macOSCheckSpelling(text: string): Promise<Array<SpellingRange>>
+
+/**
+ * Return macOS dictionary completions for one partial-word range.
+ *
+ * Returns an empty list when Apple's spelling service is unavailable.
+ * On macOS, the lookup runs on the dedicated spelling thread.
+ */
+export declare function macOSCompleteWord(text: string, start: number, length: number): Promise<Array<string>>
+
+/**
  * Options for starting a macOS power assertion.
  *
  * Each boolean maps to a `caffeinate(8)` flag and a corresponding `IOKit`
@@ -1404,6 +1507,17 @@ export interface MacOSPowerAssertionOptions {
   /** `caffeinate -d`: prevent the display from idle-sleeping. */
   display?: boolean
 }
+
+/** Whether the host can use Apple's native spelling service. */
+export declare function macOSSpellCheckerAvailable(): boolean
+
+/**
+ * Return macOS replacement guesses for one misspelled-word range.
+ *
+ * Returns an empty list when Apple's spelling service is unavailable.
+ * On macOS, the lookup runs on the dedicated spelling thread.
+ */
+export declare function macOSSpellingGuesses(text: string, start: number, length: number): Promise<Array<string>>
 
 /** A single match in the content. */
 export interface Match {
@@ -1532,6 +1646,26 @@ export interface MinimizerResult {
  * unless a text mixes U+FFFD words with lone-surrogate words.
  */
 export declare function mmrRerankIndices(contents: Array<string>, scores: Float64Array, lambdaParam: number, topK: number): Uint32Array
+
+/**
+ * Named-node chain containing `options.line`, innermost-first, excluding the
+ * whole-file root.
+ *
+ * Single-line nodes beginning on the line (attributes, decorators) come
+ * first, followed by every enclosing construct. ERROR/MISSING recovery nodes
+ * are skipped. Returns `null` when the language is unrecognized, the line is
+ * out of range / blank, or the source fails to parse entirely.
+ */
+export declare function nodeChainAt(options: BlockRangeOptions): Array<NodeSpan> | null
+
+export interface NodeSpan {
+  /** 1-indexed inclusive first line of the node. */
+  startLine: number
+  /** 1-indexed inclusive last content line of the node. */
+  endLine: number
+  /** Tree-sitter grammar node kind (e.g. `attribute_item`, `function_item`). */
+  kind: string
+}
 
 /** Parsed Kitty keyboard protocol sequence result for a Kitty input sequence. */
 export interface ParsedKittyResult {
@@ -1913,6 +2047,14 @@ export interface SnapcompactRenderOptions {
  * considered renderable because they are interpreted outside font lookup.
  */
 export declare function snapcompactSupportedChars(font: string, chars: string): string
+
+/** A misspelled span measured in JavaScript/UTF-16 code units. */
+export interface SpellingRange {
+  /** Inclusive UTF-16 start offset. */
+  start: number
+  /** UTF-16 length of the misspelled span. */
+  length: number
+}
 
 /**
  * Unified-diff hunks with jsdiff

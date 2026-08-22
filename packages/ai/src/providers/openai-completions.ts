@@ -106,6 +106,7 @@ import {
 	resolveOpenAICompletionsOutputClamp,
 	resolveOpenAIOutputTokenParam,
 	resolveOpenAIRequestSetup,
+	shouldDropAutoToolChoiceForReasoning,
 	shouldRetryWithoutStrictTools,
 } from "./openai-shared";
 import { transformMessages } from "./transform-messages";
@@ -663,12 +664,7 @@ const streamOpenAICompletionsOnce = (
 				: `${trimmedBaseUrl}/chat/completions`;
 			const createCompletionsStream = async (toolStrictModeOverride?: ToolStrictModeOverride) => {
 				const effectiveToolStrictModeOverride = disableStrictTools ? "none" : toolStrictModeOverride;
-				const { params, strictToolsApplied } = buildParams(
-					model,
-					context,
-					options,
-					effectiveToolStrictModeOverride,
-				);
+				let { params, strictToolsApplied } = buildParams(model, context, options, effectiveToolStrictModeOverride);
 				appliedStrictTools = strictToolsApplied;
 				const reasoningEffortFallbackKey = createOpenAIReasoningEffortFallbackKey(
 					"chat-completions",
@@ -682,8 +678,9 @@ const streamOpenAICompletionsOnce = (
 					applyOpenAIReasoningEffortFallback(params, requestReasoningEffortFallback);
 				}
 				activeReasoningEffortFallbackKey = reasoningEffortFallbackKey;
+				const replacedParams = await options?.onPayload?.(params, model);
+				if (replacedParams !== undefined) params = replacedParams as typeof params;
 				activeRequestParams = params;
-				options?.onPayload?.(params, model);
 				rawRequestDump = {
 					provider: model.provider,
 					api: output.api,
@@ -1696,6 +1693,10 @@ function buildParams(
 		delete params.tool_choice;
 	}
 
+	if (shouldDropAutoToolChoiceForReasoning(model, initialCompat, params.tool_choice, options)) {
+		delete params.tool_choice;
+	}
+
 	const finalPolicy = resolveOpenAICompatPolicy(model, {
 		endpoint: "chat-completions",
 		reasoning: options?.reasoning,
@@ -1949,7 +1950,7 @@ export function convertMessages(
 						content.push({
 							type: "image_url",
 							image_url: {
-								url: `data:${item.mimeType};base64,${item.data}`,
+								url: item.url ?? `data:${item.mimeType};base64,${item.data}`,
 								// Chat Completions has no "original"; omit it (provider default).
 								...(item.detail && item.detail !== "original" ? { detail: item.detail } : {}),
 							},
@@ -2256,7 +2257,7 @@ export function convertMessages(
 							imageBlocks.push({
 								type: "image_url",
 								image_url: {
-									url: `data:${block.mimeType};base64,${block.data}`,
+									url: block.url ?? `data:${block.mimeType};base64,${block.data}`,
 								},
 							});
 						}

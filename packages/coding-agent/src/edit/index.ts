@@ -21,6 +21,15 @@ import applyPatchGrammar from "./modes/apply-patch.lark" with { type: "text" };
 import { executePatchSingle, type PatchEditEntry, type PatchParams, patchEditSchema } from "./modes/patch";
 import { executeReplace, type ReplaceBatchParams, type ReplaceParams, replaceEditSchema } from "./modes/replace";
 import { type EditToolDetails, type EditToolPerFileResult, getLspBatchRequest, type LspBatchRequest } from "./renderer";
+import {
+	executeSloppy,
+	type SloppyParams,
+	type SloppySection,
+	sloppyEditSchema,
+	sloppyGrammar,
+	sloppyVariant,
+	splitSloppySections,
+} from "./sloppy";
 import { pruneOversizedEditSnapshots } from "./snapshot-details";
 import { EDIT_MODE_STRATEGIES } from "./streaming";
 
@@ -35,6 +44,7 @@ export * from "./modes/patch";
 export * from "./modes/replace";
 export * from "./normalize";
 export * from "./renderer";
+export * from "./sloppy";
 export * from "./snapshot-details";
 export * from "./streaming";
 
@@ -42,11 +52,12 @@ type TInput =
 	| typeof replaceEditSchema
 	| typeof patchEditSchema
 	| typeof hashlineEditParamsSchema
-	| typeof applyPatchSchema;
+	| typeof applyPatchSchema
+	| typeof sloppyEditSchema;
 
 type HashlineParams = typeof hashlineEditParamsSchema.infer;
 
-type EditParams = ReplaceParams | ReplaceBatchParams | PatchParams | HashlineParams | ApplyPatchParams;
+type EditParams = ReplaceParams | ReplaceBatchParams | PatchParams | HashlineParams | ApplyPatchParams | SloppyParams;
 
 type EditModeDefinition = {
 	description: (session: ToolSession) => string;
@@ -453,6 +464,7 @@ export class EditTool implements AgentTool<TInput> {
 	get customFormat(): { syntax: "lark"; definition: string } | undefined {
 		if (this.mode === "apply_patch") return { syntax: "lark", definition: applyPatchGrammar };
 		if (this.mode === "hashline") return { syntax: "lark", definition: hashlineGrammar };
+		if (this.mode === "sloppy") return { syntax: "lark", definition: sloppyGrammar };
 		return undefined;
 	}
 
@@ -509,7 +521,7 @@ export class EditTool implements AgentTool<TInput> {
 	}
 
 	#getModeDefinition(): EditModeDefinition {
-		return {
+		const definitions = {
 			patch: {
 				description: () => prompt.render(patchDescription),
 				parameters: patchEditSchema,
@@ -652,6 +664,39 @@ export class EditTool implements AgentTool<TInput> {
 					});
 				},
 			},
+			sloppy: {
+				description: () => prompt.render(sloppyVariant.description),
+				parameters: sloppyEditSchema,
+				execute: async (
+					tool: EditTool,
+					params: EditParams,
+					signal: AbortSignal | undefined,
+					batchRequest: LspBatchRequest | undefined,
+					_onUpdate?: (partialResult: AgentToolResult<EditToolDetails, TInput>) => void,
+				) => {
+					const { input } = params as SloppyParams;
+					// `[path]` headers open per-file sections; the first line MUST be one.
+					const sections = splitSloppySections(input);
+					if (sections.length === 0) {
+						throw new Error("Missing file header: start the payload with `§relative/path.ts`.");
+					}
+					const resolved: SloppySection[] = [];
+					for (const section of sections) {
+						resolved.push({
+							path: await resolveEditPath(tool.session, section.path, { mustExist: true, signal }),
+							body: section.body,
+						});
+					}
+					return executeSloppy({
+						session: tool.session,
+						sections: resolved,
+						signal,
+						batchRequest,
+						writethrough: tool.#writethrough,
+						beginDeferredDiagnosticsForPath: p => tool.#deferredDiagnostics.begin(p),
+					});
+				},
+			},
 			replace: {
 				description: () => prompt.render(replaceDescription),
 				parameters: replaceEditSchema,
@@ -694,6 +739,7 @@ export class EditTool implements AgentTool<TInput> {
 					return executeSinglePathEntries(targetPath, runs, batchRequest, onUpdate, tool.session.cwd, signal);
 				},
 			},
-		}[this.mode];
+		};
+		return definitions[this.mode];
 	}
 }

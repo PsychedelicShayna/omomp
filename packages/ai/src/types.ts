@@ -32,7 +32,7 @@ import type {
 	ShellResult,
 	WriteArgs,
 	WriteResult,
-} from "@oh-my-pi/pi-catalog/discovery/cursor-gen/agent_pb";
+} from "@oh-my-pi/pi-catalog/discovery/cursor-proto";
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { isOpenAIModelId } from "@oh-my-pi/pi-catalog/identity/family";
 import type { Api, FetchImpl, KnownApi, Model, Provider, ThinkingBudgets, Usage } from "@oh-my-pi/pi-catalog/types";
@@ -501,6 +501,8 @@ export interface StreamOptions {
 	providerSessionState?: Map<string, ProviderSessionState>;
 	/** Canonical Codex compaction classification; ignored by other providers. */
 	codexCompaction?: CodexCompactionRequestContext;
+	/** Codex Code Mode tool exposure snapshot emitted as `tool_namespaces_info` turn metadata; ignored by other providers. */
+	toolNamespacesInfo?: unknown;
 	/**
 	 * Optional per-provider concurrent request cap for LLM stream calls. Keys are
 	 * provider ids (`model.provider`); positive numeric values cap in-flight
@@ -738,6 +740,14 @@ export interface AnthropicServerToolContent {
 		  };
 }
 
+/** Provider-native uploaded file reference for image reuse without retransmitting bytes. */
+export interface ProviderFileReference {
+	provider: "openai" | "anthropic" | "google";
+	id?: string;
+	uri?: string;
+	expiresAt?: number;
+}
+
 export interface ImageContent {
 	type: "image";
 	data: string; // base64 encoded image data
@@ -748,6 +758,18 @@ export interface ImageContent {
 	 * default `auto` downscale). Providers without a detail knob ignore it.
 	 */
 	detail?: "auto" | "low" | "high" | "original";
+	/** Provider-native file reference preferred only by its matching provider. */
+	providerFile?: ProviderFileReference;
+	/**
+	 * Optional https mirror of `data`, served by a caller-run blob server.
+	 * Providers whose API fetches remote images send this URL instead of the
+	 * base64 payload; every other provider ignores it. `data` remains the
+	 * source of truth — the URL must serve exactly those bytes, and callers
+	 * are responsible for keeping it stable across turns (prefix caches hash
+	 * the URL string, and Anthropic silently forgets images when a resent
+	 * turn differs byte-wise).
+	 */
+	url?: string;
 }
 
 export type ComputerAction =
@@ -886,6 +908,13 @@ export interface ContextSnapshot {
 	nonMessageTokens: number; // estimated non-message total at send time
 	/** Estimated prompt tokens removed by local history rewrites after this provider snapshot was recorded. */
 	historyRewriteTokensRemoved?: number;
+	/**
+	 * Compaction epoch current when this snapshot's provider request was recorded.
+	 * A later compaction bumps the session epoch, so an anchor whose epoch is
+	 * older than the current in-flight snapshot describes pre-compaction history
+	 * and must not override the rebased estimate.
+	 */
+	compactionEpoch?: number;
 	lastMessageTimestamp?: number;
 }
 

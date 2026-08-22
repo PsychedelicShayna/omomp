@@ -246,6 +246,7 @@ function assertDepthAndSpawnAllowed(request: StructuredSubagentRequest, agentNam
 export async function resolveEffectiveSubagentPolicy(
 	request: StructuredSubagentRequest,
 ): Promise<EffectiveSubagentPolicy> {
+	await request.session.settings.reloadFromDisk();
 	const spawnPolicy = resolveSpawnPolicy(request.session.getSessionSpawns());
 	const agentName = request.agent?.trim() || spawnPolicy.defaultAgent;
 	const planMode = request.session.getPlanModeState?.()?.enabled === true;
@@ -404,7 +405,9 @@ function buildExecutorOptions(
 		assignment: request.assignment.trim(),
 		context: request.context?.trim() || undefined,
 		planReference: undefined,
-		description: trimToUndefined(request.identity?.label),
+		// Task `name` is the spawn handle (id allocation). Eval `label` is a
+		// real UI description. Copy it only for eval so generateTaskLabel can run.
+		description: request.invocationKind === "eval" ? trimToUndefined(request.identity?.label) : undefined,
 		index: request.index ?? 0,
 		parentToolCallId: request.parentToolCallId,
 		detached: request.detached,
@@ -487,7 +490,7 @@ function buildFailureResult(
 			agentSource: policy.agent.source,
 			task: renderSubagentPrompt(request.assignment),
 			assignment: request.assignment.trim(),
-			description: trimToUndefined(request.identity?.label),
+			description: request.invocationKind === "eval" ? trimToUndefined(request.identity?.label) : undefined,
 			exitCode: 1,
 			output: "",
 			stderr: message,
@@ -570,6 +573,10 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 	let requiresRecoveryArtifacts = false;
 	let completedSuccessfully = false;
 	let deferredCleanup: Promise<void> | undefined;
+	const onSubprocessResult =
+		request.invocationKind === "eval"
+			? (result: SingleResult) => request.session.recordEvalSubagentUsage?.(result.usage?.output ?? 0)
+			: undefined;
 	try {
 		const id = await reserveStructuredSubagentId(request.session, {
 			...request.identity,
@@ -588,24 +595,29 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 				const message = error instanceof Error ? error.message : String(error);
 				throw new StructuredSubagentError(
 					"isolation",
-					`Isolated subagent execution requires a git repository. ${message}`,
+					`Isolated subagent execution could not be prepared: ${message}`,
 					{ cause: error },
 				);
 			}
 		}
-		const result = !isolationContext
-			? await runSubprocess(baseOptions)
-			: await runIsolatedSubprocess({
-					baseOptions,
-					context: isolationContext,
-					preferredBackend: parseIsolationMode(request.session.settings.get("task.isolation.mode")),
-					agentId: id,
-					mergeMode: policy.mergeMode,
-					artifactsDir: lease.artifactsDir,
-					description: trimToUndefined(request.identity?.label),
-					buildCommitMessage: makeIsolationCommitMessage(request.session),
-					buildFailureResult: buildFailureResult(request, policy, id, Date.now()),
-				});
+		let result: SingleResult;
+		if (!isolationContext) {
+			result = await runSubprocess(baseOptions);
+			onSubprocessResult?.(result);
+		} else {
+			result = await runIsolatedSubprocess({
+				baseOptions,
+				context: isolationContext,
+				preferredBackend: parseIsolationMode(request.session.settings.get("task.isolation.mode")),
+				agentId: id,
+				mergeMode: policy.mergeMode,
+				artifactsDir: lease.artifactsDir,
+				description: trimToUndefined(request.identity?.label),
+				buildCommitMessage: makeIsolationCommitMessage(request.session),
+				buildFailureResult: buildFailureResult(request, policy, id, Date.now()),
+				onSubprocessResult,
+			});
+		}
 		attachStructuredOutputMetadata(result, policy.schema);
 		requiresRecoveryArtifacts =
 			policy.isIsolated &&

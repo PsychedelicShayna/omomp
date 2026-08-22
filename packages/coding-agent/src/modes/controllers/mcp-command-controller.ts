@@ -70,6 +70,7 @@ import { groupBySource, parseRemoveArgs, readScopeFlag, showCommandMessage } fro
 
 const MCP_MANUAL_INPUT_PROVIDER_ID = "mcp";
 const MCP_MANUAL_LOGIN_TIP = "Headless? Paste the redirect URL or code with /login <value>.";
+const MCP_TEST_ESCAPE_GRACE_MS = 5_000;
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string, onTimeout?: () => void): Promise<T> {
 	const { promise: timeoutPromise, reject } = Promise.withResolvers<T>();
 	const timer = setTimeout(() => {
@@ -1198,11 +1199,20 @@ export class MCPCommandController {
 			connectionError = error as Error;
 		}
 
-		// Server connected fine without auth — reauth is not needed. A tool-level
-		// challenge overrides this: servers may allow the anonymous handshake yet
-		// protect individual tool calls with `_meta["mcp/www_authenticate"]`.
+		// Server connected fine without auth. A tool-level challenge overrides
+		// this: servers may allow the anonymous handshake yet protect individual
+		// tool calls with `_meta["mcp/www_authenticate"]`. Even without such a
+		// challenge, a clean `initialize` is only weak evidence — per the MCP
+		// spec a server MAY permit unauthenticated `initialize` while requiring a
+		// bearer token for `tools/call`. The user explicitly asked to reauth, so
+		// honor it when the server advertises OAuth discovery metadata; only
+		// refuse when there is genuinely no OAuth endpoint to acquire.
 		if (connectionSucceeded && !authChallenge) {
-			throw new Error("Server connection succeeded without OAuth; reauthorization is not required.");
+			const discovered = "url" in config && config.url ? await discoverOAuthEndpoints(config.url) : null;
+			if (!discovered) {
+				throw new Error("Server connection succeeded without OAuth; reauthorization is not required.");
+			}
+			return discovered;
 		}
 
 		// Tool calls can carry richer RFC 6750/RFC 9728 hints than the original
@@ -1564,17 +1574,24 @@ export class MCPCommandController {
 			return;
 		}
 
-		const originalOnEscape = this.ctx.editor.onEscape;
 		const abortController = new AbortController();
-		this.ctx.editor.onEscape = () => {
-			abortController.abort();
-		};
+		const handleEscape = (): void => abortController.abort();
+
+		// Claim Esc before the first await: a slow `#resolveServerForAuth()` (e.g.
+		// config on a network filesystem) must not let Esc fall through to the
+		// agent-turn abort while the command is already running.
+		this.ctx.mcpTestEscapeHandlers.add(handleEscape);
 
 		let connection: MCPServerConnection | undefined;
+		// The grace window only applies once the "(esc to cancel)" hint is on
+		// screen; a pre-hint failure must release Esc immediately so it is not
+		// swallowed for a prompt the user never saw.
+		let hintShown = false;
 		try {
 			const found = await this.#resolveServerForAuth(name);
 
 			if (!found) {
+				this.ctx.mcpTestEscapeHandlers.delete(handleEscape);
 				this.ctx.showError(
 					`Server "${name}" not found.\n\nTip: Run ${theme.fg("accent", "/mcp list")} to see available servers.`,
 				);
@@ -1583,6 +1600,7 @@ export class MCPCommandController {
 
 			const { config } = found;
 			if (config.enabled === false) {
+				this.ctx.mcpTestEscapeHandlers.delete(handleEscape);
 				this.ctx.showError(`Server "${name}" is disabled. Run /mcp enable ${name} first.`);
 				return;
 			}
@@ -1590,6 +1608,7 @@ export class MCPCommandController {
 			this.#showMessage(
 				["", theme.fg("muted", `Testing connection to "${name}"... (esc to cancel)`), ""].join("\n"),
 			);
+			hintShown = true;
 
 			// Resolve auth config if needed
 			let resolvedConfig: MCPServerConfig;
@@ -1651,7 +1670,16 @@ export class MCPCommandController {
 
 			this.ctx.showError(`Failed to connect to "${name}": ${errorMsg}${helpText}`);
 		} finally {
-			this.ctx.editor.onEscape = originalOnEscape;
+			if (this.ctx.mcpTestEscapeHandlers.has(handleEscape)) {
+				if (hintShown) {
+					const timer = setTimeout(() => {
+						this.ctx.mcpTestEscapeHandlers.delete(handleEscape);
+					}, MCP_TEST_ESCAPE_GRACE_MS);
+					timer.unref();
+				} else {
+					this.ctx.mcpTestEscapeHandlers.delete(handleEscape);
+				}
+			}
 			if (connection) {
 				// Best-effort: don't block UI on cleanup.
 				void disconnectServer(connection);
