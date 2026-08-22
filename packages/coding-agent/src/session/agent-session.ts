@@ -7889,6 +7889,11 @@ export class AgentSession {
 		return this.#eval.isRunning;
 	}
 
+	/** Whether a specific eval language/backend is currently running */
+	isEvalLanguageRunning(language: string): boolean {
+		return this.#eval.isLanguageRunning(language);
+	}
+
 	/** Whether there are pending Python messages waiting to be flushed */
 	get hasPendingPythonMessages(): boolean {
 		return this.#eval.hasPendingMessages;

@@ -37,7 +37,7 @@ export class EvalRunner {
 	readonly #kernelOwnerId: string;
 	readonly #parentSessionId: string | undefined;
 	readonly #host: EvalRunnerHost;
-	#abortControllers = new Set<AbortController>();
+	#abortControllers = new Map<AbortController, string>();
 	#pendingMessages: EvalExecutionMessage[] = [];
 	#activeExecutions = new Set<Promise<unknown>>();
 	#disposing = false;
@@ -58,6 +58,7 @@ export class EvalRunner {
 		const cwd = this.#host.sessionManager.getCwd();
 		this.assertExecutionAllowed();
 		const abortController = new AbortController();
+		const canonicalLanguage = this.#canonicalLanguage(language);
 		const execution = (async () => {
 			const extensionRunner = this.#host.extensionRunner();
 			if (extensionRunner?.hasHandlers("user_eval")) {
@@ -94,7 +95,7 @@ export class EvalRunner {
 			this.recordResult(backend.id, code, result, options);
 			return result;
 		})();
-		return await this.trackExecution(execution, abortController);
+		return await this.trackExecution(execution, abortController, canonicalLanguage);
 	}
 
 	/** Compatibility caller surface; new user-input routing calls execute("py", ...). */
@@ -126,8 +127,8 @@ export class EvalRunner {
 		if (this.#disposing) throw new Error("Eval execution is unavailable while session disposal is in progress");
 	}
 
-	trackExecution<T>(execution: Promise<T>, abortController: AbortController): Promise<T> {
-		this.#abortControllers.add(abortController);
+	trackExecution<T>(execution: Promise<T>, abortController: AbortController, language?: string): Promise<T> {
+		this.#abortControllers.set(abortController, language ?? "unknown");
 		this.#activeExecutions.add(execution);
 		void execution.finally(() => {
 			this.#abortControllers.delete(abortController);
@@ -154,11 +155,20 @@ export class EvalRunner {
 
 	abort(): void {
 		if (this.#abortControllers.size === 0) return;
-		for (const controller of this.#abortControllers) controller.abort();
+		for (const controller of this.#abortControllers.keys()) controller.abort();
 		void evalBackendRegistry(this.#host.sessionManager).interrupt();
 	}
 
 	get isRunning(): boolean { return this.#abortControllers.size > 0; }
+
+	/** Whether a specific language/backend has an active execution. */
+	isLanguageRunning(language: string): boolean {
+		const canonical = this.#canonicalLanguage(language);
+		for (const lang of this.#abortControllers.values()) {
+			if (lang === canonical) return true;
+		}
+		return false;
+	}
 	get hasPendingMessages(): boolean { return this.#pendingMessages.length > 0; }
 	getKernelOwnerId(): string { return this.#kernelOwnerId; }
 	getSessionId(): string | null {
@@ -206,5 +216,16 @@ export class EvalRunner {
 		logger.warn("Aborting active eval execution during dispose before retained kernel cleanup");
 		this.abort();
 		return await this.#waitForExecutionsToSettle(1_000);
+	}
+
+	/** Normalize language aliases to canonical tokens for per-language tracking. */
+	#canonicalLanguage(token: string): string {
+		switch (token) {
+			case "py": case "python": return "py";
+			case "js": case "javascript": return "js";
+			case "rb": case "ruby": return "rb";
+			case "jl": case "julia": return "jl";
+			default: return token;
+		}
 	}
 }

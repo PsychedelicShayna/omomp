@@ -834,8 +834,8 @@ export class InputController {
 			// Handle generic user eval commands for built-ins and registered aliases.
 			const evalCommand = parseReplEvalInput(text, runner?.getEvalBackendAliases());
 			if (evalCommand) {
-				if (this.ctx.session.isEvalRunning) {
-					this.ctx.showWarning("An eval execution is already running. Press Esc to cancel it first.");
+				if (this.ctx.session.isEvalLanguageRunning(evalCommand.language)) {
+					this.ctx.showWarning(`The ${evalCommand.language} kernel is busy. Press Esc to cancel it first.`);
 					this.ctx.editor.setText(text);
 					return;
 				}
