@@ -2891,12 +2891,19 @@ export class AgentSession {
 			// TTSR retry work runs concurrently and clears the live flag before
 			// maintenance can emit agent_end, so preserve the state at settle entry.
 			const ttsrAbortPendingAtAgentEnd = this.#ttsr.abortPending;
-			const emitAgentEndNotification = async (options?: { willContinue?: boolean }) => {
+			const emitAgentEndNotification = async (options?: { willContinue?: boolean; hasFinalResponse?: boolean }) => {
 				this.#emitRunState("idle");
 				// Public agent_end is held out of the eager display pass and emitted
 				// here after maintenance routing, tagged isTerminal so subscribers can
-				// tell final settles from scheduled continuations.
-				await this.#emitSessionEvent({ ...event, isTerminal: !options?.willContinue });
+				// tell final settles from scheduled continuations. hasFinalResponse
+				// defaults to the terminal case and is set explicitly for a settle whose
+				// main lane already answered while a continuation is still scheduled.
+				const willContinue = options?.willContinue === true;
+				await this.#emitSessionEvent({
+					...event,
+					isTerminal: !willContinue,
+					hasFinalResponse: options?.hasFinalResponse ?? !willContinue,
+				});
 				void this.#emitAgentEndNotification([...activeMessages], options).catch(err => {
 					logger.error("Agent end extension notification failed", { err });
 				});
@@ -3189,8 +3196,16 @@ export class AgentSession {
 			// the real stop settles later. Defer the session_stop hook pass until
 			// the session is fully idle (the todo reminder above defers the same
 			// way inside #checkTodoCompletion).
+			// The main lane still finished answering here: every continuation path
+			// above returned, and a tool-call stop returned at the hasToolCalls gate,
+			// so a non-error message reaching this point IS the turn's final answer.
+			// Tag it so answer relays (the live voice relay) speak it now instead of
+			// waiting for background jobs that may never produce another assistant turn.
 			if (this.#hasPendingAsyncWake()) {
-				await emitAgentEndNotification({ willContinue: true });
+				await emitAgentEndNotification({
+					willContinue: true,
+					hasFinalResponse: msg.stopReason !== "error",
+				});
 				return;
 			}
 			const sessionStopWillContinue = await this.#emitSessionStopEvent(activeMessages, msg);

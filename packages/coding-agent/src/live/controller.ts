@@ -87,6 +87,29 @@ function currentUser(): { username: string; firstName: string } {
 	return { username, firstName: firstPart ?? "there" };
 }
 
+/** How one `agent_end` settle drives the voice relay. */
+export interface RelaySettleAction {
+	/** Whether this settle carries an answer the relay must speak. */
+	relay: boolean;
+	/** Whether the delegation is finished and its id may be released. */
+	closeDelegation: boolean;
+}
+
+/**
+ * Classify an `agent_end` settle for the voice relay.
+ *
+ * A terminal settle ends the delegation and speaks its answer. A non-terminal
+ * settle is normally a scheduling pause with no answer yet — but when background
+ * async work is the only thing keeping the session alive, the main lane already
+ * answered (`hasFinalResponse`). The caller is on a phone call and cannot wait for
+ * subagents, so that answer is spoken immediately while the delegation stays open
+ * to also relay the answer of the turn a later async delivery wakes.
+ */
+export function classifyRelaySettle(event: { isTerminal?: boolean; hasFinalResponse?: boolean }): RelaySettleAction {
+	if (event.isTerminal !== false) return { relay: true, closeDelegation: true };
+	return { relay: event.hasFinalResponse === true, closeDelegation: false };
+}
+
 /** Coordinates the realtime conversational surface with normal AgentSession turns. */
 export class LiveSessionController {
 	readonly #session: AgentSession;
@@ -108,6 +131,12 @@ export class LiveSessionController {
 	#inputLevel = 0;
 	#outputLevel = 0;
 	#activeDelegationId: string | undefined;
+	/**
+	 * Last assistant message already relayed for the active delegation. A settle
+	 * that pauses for background jobs relays the answer while the delegation stays
+	 * open, so the next settle must not repeat an answer the caller already heard.
+	 */
+	#lastRelayedResponse: AgentMessage | undefined;
 	#userTranscript = "";
 	#assistantTranscript = "";
 	#userTranscriptFinal = false;
@@ -316,6 +345,7 @@ export class LiveSessionController {
 		if (this.#stopped) return;
 
 		this.#activeDelegationId = event.item.id;
+		this.#lastRelayedResponse = undefined;
 		await this.#session.sendCustomMessage(
 			{
 				customType: LIVE_DELEGATION_MESSAGE_TYPE,
@@ -332,8 +362,10 @@ export class LiveSessionController {
 			if (event.message.stopReason === "toolUse") this.#appendProgress(event.message);
 			return;
 		}
-		if (event.type !== "agent_end" || event.isTerminal === false) return;
-		this.#appendFinalResponse(event.messages);
+		if (event.type !== "agent_end") return;
+		const { relay, closeDelegation } = classifyRelaySettle(event);
+		if (!relay) return;
+		this.#appendFinalResponse(event.messages, { closeDelegation });
 	}
 
 	#appendProgress(message: AssistantMessage): void {
@@ -346,21 +378,28 @@ export class LiveSessionController {
 		}
 	}
 
-	#appendFinalResponse(messages: readonly AgentMessage[]): void {
+	#appendFinalResponse(messages: readonly AgentMessage[], options: { closeDelegation: boolean }): void {
 		const delegationId = this.#activeDelegationId;
 		if (!delegationId) return;
 		for (let index = messages.length - 1; index >= 0; index -= 1) {
 			const message = messages[index];
 			if (message?.role !== "assistant") continue;
+			// Already relayed at an earlier pause: a wake that produced no new answer
+			// must not make the relay repeat itself.
+			if (message === this.#lastRelayedResponse) break;
 			const text = this.#extractAssistantText(message).trim();
 			if (!text) continue;
+			this.#lastRelayedResponse = message;
 			const finalContext = prompt.render(agentFinalMessageTemplate, { message: text });
 			for (const chunk of chunkLiveContext(finalContext)) {
 				this.#queueSend(buildDelegationContextAppend(delegationId, chunk));
 			}
 			break;
 		}
-		this.#activeDelegationId = undefined;
+		if (options.closeDelegation) {
+			this.#activeDelegationId = undefined;
+			this.#lastRelayedResponse = undefined;
+		}
 		this.#refreshAudioPhase();
 	}
 

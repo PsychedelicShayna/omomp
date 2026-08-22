@@ -14,6 +14,13 @@ export type AgentSessionEvent =
 	| (Extract<AgentEvent, { type: "agent_end" }> & {
 			/** False when an async delivery will resume the session before its true final settle. */
 			isTerminal?: boolean;
+			/**
+			 * True when this settle carries the turn's final assistant answer, even when
+			 * `isTerminal` is false because a pending async delivery will wake the session
+			 * again. Consumers that relay the answer outward (the live voice relay) key off
+			 * this; UI that tracks run state (the TUI) keeps keying off `isTerminal`.
+			 */
+			hasFinalResponse?: boolean;
 	  })
 	| {
 			type: "auto_compaction_start";
