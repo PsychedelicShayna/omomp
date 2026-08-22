@@ -1,9 +1,7 @@
-import type { ExtensionFactory } from "/home/shayna/omp/packages/coding-agent/src/extensibility/extensions/types.ts";
-import { discoverJupyterBackends, type KernelAliasRecord } from "./jupyter";
+import type { ExtensionContext, ExtensionFactory } from "/home/shayna/omp/packages/coding-agent/src/extensibility/extensions/types.ts";
+import { discoverJupyterBackends, getJupyterRuntimeSnapshot, interruptJupyterKernel, restartJupyterKernel, type KernelAliasRecord } from "./jupyter";
 import { discoverShellBackends, type ShellProfileRecord } from "./shell";
 import { BompStateStore, defaultStatePath, readReplProfiles } from "./state";
-import { createKernelDashboard } from "./ui/kernel-dashboard";
-import { createReplDashboard } from "./ui/repl-dashboard";
 
 export interface ReplProfileConfiguration { shellProfiles: readonly ShellProfileRecord[]; kernelAliases: readonly KernelAliasRecord[] }
 export interface ReplBackendItem { id: string; label: string; kind: "agent" | "builtin" | "shell" | "kernel" }
@@ -51,6 +49,75 @@ function bypassActiveRewrite(text: string): boolean {
 	return trimmed.startsWith("$") || trimmed.startsWith("/") || trimmed.startsWith("!");
 }
 
+/** Interactive select-based REPL backend picker — replaces the old overlay dashboard. */
+async function replMenu(ctx: ExtensionContext): Promise<void> {
+	const snapshot = getReplRuntimeSnapshot();
+	const options = snapshot.available.map(item => ({
+		label: `${item.id === snapshot.active ? "● " : "  "}${item.label}`,
+		description: `${item.kind}${item.id === snapshot.active ? " (active)" : ""}`,
+	}));
+
+	const title = `REPL backend (active: ${snapshot.active})`;
+	const selected = await ctx.ui.select(title, options);
+	if (!selected) return;
+
+	const backendLabel = selected.replace(/^[● ] {0,2}/, "");
+	const backend = snapshot.available.find(item => item.label === backendLabel);
+	if (!backend) return;
+
+	if (setReplBackend(backend.id)) {
+		ctx.ui.setStatus("omomp-repl", backend.id === "agent" ? undefined : `REPL ${backend.id}`);
+		ctx.ui.notify(backend.id === "agent" ? "Returned to agent" : `REPL backend: ${backend.label}`, "info");
+	} else {
+		ctx.ui.notify(`Unavailable REPL backend: ${backend.id}`, "error");
+	}
+}
+
+/** Interactive select-based kernel manager — replaces the old overlay dashboard. */
+async function kernelMenu(ctx: ExtensionContext): Promise<void> {
+	const snapshots = getJupyterRuntimeSnapshot();
+	if (snapshots.length === 0) {
+		ctx.ui.notify('No kernels — map an alias under "kernelAliases" in omomp.json', "info");
+		return;
+	}
+
+	// eslint-disable-next-line no-constant-condition
+	while (true) {
+		const fresh = getJupyterRuntimeSnapshot();
+		const options = fresh.map(k => ({
+			label: `${k.alias}`,
+			description: `${k.displayName} · ${k.state}`,
+		}));
+
+		const selected = await ctx.ui.select("Jupyter kernels", options);
+		if (!selected) return;
+
+		const kernel = fresh.find(k => k.alias === selected);
+		if (!kernel) continue;
+
+		const action = await ctx.ui.select(`${kernel.alias} (${kernel.state})`, [
+			{ label: "Interrupt", description: "Send interrupt signal to the kernel" },
+			{ label: "Restart", description: "Restart the kernel process" },
+		]);
+		if (!action) continue;
+
+		switch (action) {
+			case "Interrupt": {
+				const ok = await interruptJupyterKernel(kernel.alias);
+				ctx.ui.notify(ok ? `Interrupted ${kernel.alias}` : `Failed to interrupt ${kernel.alias}`, ok ? "info" : "error");
+				break;
+			}
+			case "Restart": {
+				if (await ctx.ui.confirm("Restart kernel", `Restart '${kernel.alias}'? Running cells will be lost.`)) {
+					const ok = await restartJupyterKernel(kernel.alias);
+					ctx.ui.notify(ok ? `Restarted ${kernel.alias}` : `Failed to restart ${kernel.alias}`, ok ? "info" : "error");
+				}
+				break;
+			}
+		}
+	}
+}
+
 export const createReplExtension: ExtensionFactory = api => {
 	let registered = false;
 	let unsubscribeInput: (() => void) | undefined;
@@ -64,9 +131,6 @@ export const createReplExtension: ExtensionFactory = api => {
 					"warning",
 				);
 			} else {
-				// Discovery shells out (jupyter kernelspec, shell probing); run it in
-				// the background so session startup never waits on it. The patched
-				// runtime forwards late registrations live.
 				void (async () => {
 					try {
 						const config = await profileProvider();
@@ -107,13 +171,8 @@ export const createReplExtension: ExtensionFactory = api => {
 			const words = args.trim().split(/\s+/).filter(Boolean);
 			const requested = words[0] === "agent" ? "agent" : words[0] === "use" ? words[1] : undefined;
 			if (!requested) {
-				const dashboard = createReplDashboard(ctx);
-				try {
-					if (ctx.hasUI) await dashboard.showOverlay();
-					else ctx.ui.notify(dashboard.renderText(80).join("\n"), "info");
-				} finally {
-					dashboard.dispose();
-				}
+				if (ctx.hasUI) await replMenu(ctx);
+				else ctx.ui.notify(getReplRuntimeSnapshot().available.map(b => `${b.id === active ? "*" : "-"} ${b.label} (${b.kind})`).join("\n"), "info");
 				return;
 			}
 			if (!setReplBackend(requested)) { ctx.ui.notify(`Unavailable REPL backend: ${requested}`, "error"); return; }
@@ -129,13 +188,8 @@ export const createReplExtension: ExtensionFactory = api => {
 				ctx.ui.notify("Usage: /kernel", "error");
 				return;
 			}
-			const dashboard = createKernelDashboard(ctx);
-			try {
-				if (ctx.hasUI) await dashboard.showOverlay();
-				else ctx.ui.notify(dashboard.renderText(80).join("\n"), "info");
-			} finally {
-				dashboard.dispose();
-			}
+			if (ctx.hasUI) await kernelMenu(ctx);
+			else ctx.ui.notify(getJupyterRuntimeSnapshot().map(k => `${k.alias}: ${k.displayName} (${k.state})`).join("\n") || "No kernels", "info");
 		},
 	});
 

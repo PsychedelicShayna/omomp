@@ -5,9 +5,54 @@
 // build /loadout use|off reports the missing capability instead of switching.
 import type { ExtensionAPI, ExtensionCommandContext } from "/home/shayna/omp/packages/coding-agent/src/extensibility/extensions/types.ts";
 import { createLoadoutFeature } from "./loadout.ts";
+import type { LoadoutFeature } from "./loadout.ts";
 import { BompStateStore, defaultStatePath } from "./state.ts";
-import { createLoadoutDashboard } from "./ui/loadout-dashboard.ts";
 import { output, report, words } from "./util.ts";
+
+/** Interactive select-based loadout menu — replaces the old overlay dashboard. */
+async function loadoutMenu(loadouts: LoadoutFeature, ctx: ExtensionCommandContext): Promise<void> {
+	// eslint-disable-next-line no-constant-condition
+	while (true) {
+		const data = await loadouts.data();
+		const options = [
+			...data.items.map(item => ({
+				label: `${item.active ? "● " : "  "}${item.name}`,
+				description: item.loadout.mainModel,
+			})),
+			...(data.active ? [{ label: "✕ Deactivate loadout", description: `Turn off '${data.active}'` }] : []),
+		];
+
+		if (options.length === 0) {
+			ctx.ui.notify("No loadouts defined.", "info");
+			return;
+		}
+
+		const title = data.active ? `Loadouts (active: ${data.active})` : "Loadouts";
+		const selected = await ctx.ui.select(title, options);
+		if (!selected) return;
+
+		if (selected === "✕ Deactivate loadout") {
+			ctx.ui.notify(await loadouts.off(ctx), "info");
+			continue;
+		}
+
+		// Selected a loadout — show detail actions
+		const loadoutName = selected.replace(/^[● ] {0,2}/, "");
+		const isActive = data.items.find(i => i.name === loadoutName)?.active ?? false;
+		const action = await ctx.ui.select(`${loadoutName}`, [
+			...(isActive ? [] : [{ label: "Use", description: "Apply this loadout to the session" }]),
+			{ label: "Show", description: "View the full loadout definition" },
+			...(isActive ? [{ label: "Deactivate", description: "Turn off this loadout" }] : []),
+		]);
+		if (!action) continue;
+
+		switch (action) {
+			case "Use": ctx.ui.notify(await loadouts.use(loadoutName, ctx), "info"); break;
+			case "Show": ctx.ui.notify(await loadouts.show(loadoutName), "info"); break;
+			case "Deactivate": ctx.ui.notify(await loadouts.off(ctx), "info"); break;
+		}
+	}
+}
 
 export default function omomp_loadout(api: ExtensionAPI): void {
 	const store = new BompStateStore(defaultStatePath());
@@ -19,8 +64,7 @@ export default function omomp_loadout(api: ExtensionAPI): void {
 			const [command, name] = words(args);
 			if (!command) {
 				if (!ctx.hasUI) return report(ctx, () => loadouts.status());
-				const dashboard = createLoadoutDashboard(loadouts, ctx);
-				try { await dashboard.showOverlay(); } finally { dashboard.dispose(); }
+				await loadoutMenu(loadouts, ctx);
 				return;
 			}
 			switch (command) {
