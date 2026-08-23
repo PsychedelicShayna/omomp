@@ -498,9 +498,12 @@ if "__omp_prelude_loaded__" not in globals():
     ):
         """Run a subagent and return its final output or structured data.
 
-        `schema` overrides agent and session schemas. `schema_mode` is
-        `"permissive"` or `"strict"`. `handle=True` returns the child output
-        reference and metadata, with parsed data under `"data"` when available.
+        `agent` is a discovered agent name or a direct model selector
+        (`provider/model[:effort]` or `@role[:effort]`) that crews the generic
+        `task` agent with exactly that model. `schema` overrides agent and
+        session schemas. `schema_mode` is `"permissive"` or `"strict"`.
+        `handle=True` returns the child output reference and metadata, with
+        parsed data under `"data"` when available.
         """
         args = {"prompt": prompt}
         if agent is not None:

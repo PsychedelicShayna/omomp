@@ -23,7 +23,7 @@ Agents marked BLOCKING run inline — results return in this call; non-blocking 
 - `context`: Shared project state, constraints, and contracts. Applies to the entire batch; do not duplicate this background into individual tasks.
 - `tasks[]`: Array of subagents to spawn.
   - `name`: A stable CamelCase identifier (≤32 chars), used to address the agent (IRC, job ids). Generated automatically if omitted.
-  - `agent`: The agent type to spawn (e.g. {{#if scoutAvailable}}`scout`, {{/if}}`reviewer`).
+  - `agent`: The agent type to spawn (e.g. {{#if scoutAvailable}}`scout`, {{/if}}`reviewer`), or a direct model selector — `provider/model[:effort]` or `@role[:effort]` (efforts: minimal|low|medium|high|xhigh|max|auto) — which crews the generic `task` agent with exactly that model and thinking level. Omitted effort = the model's default (auto); registered agent names always win over selector interpretation; invalid selectors fail loudly.
     Omitting `agent` selects the spawn-policy default (`{{defaultAgent}}`). Use it only when that agent fits the task.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
     NEVER pass the spawn-policy default explicitly. Only omit it after checking the available agents below.
   - `task`: Complete, self-contained instructions. One-liners or missing acceptance criteria are PROHIBITED.
@@ -40,7 +40,7 @@ Agents marked BLOCKING run inline — results return in this call; non-blocking 
 {{/if}}
 {{else}}
 - `name`: A stable CamelCase identifier (≤32 chars), used to address the agent (IRC, job ids). Generated automatically if omitted.
-- `agent`: The agent type to spawn (e.g. {{#if scoutAvailable}}`scout`, {{/if}}`reviewer`).
+- `agent`: The agent type to spawn (e.g. {{#if scoutAvailable}}`scout`, {{/if}}`reviewer`), or a direct model selector — `provider/model[:effort]` or `@role[:effort]` (efforts: minimal|low|medium|high|xhigh|max|auto) — which crews the generic `task` agent with exactly that model and thinking level. Omitted effort = the model's default (auto); registered agent names always win over selector interpretation; invalid selectors fail loudly.
   Omitting `agent` selects the spawn-policy default (`{{defaultAgent}}`). Use it only when that agent fits the task.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
   NEVER pass the spawn-policy default explicitly. Only omit it after checking the available agents below.
 - `task`: Complete, self-contained instructions. One-liners or missing acceptance criteria are PROHIBITED.

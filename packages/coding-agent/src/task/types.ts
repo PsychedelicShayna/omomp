@@ -133,7 +133,7 @@ const taskItemSchemaIsolated = type({
 export interface TaskItem {
 	/** Stable agent name; becomes the registry/IRC id. Default = generated AdjectiveNoun. */
 	name?: string;
-	/** Agent type to run this item (e.g. "scout"). Defaults to the spawn policy's default agent. */
+	/** Agent type to run this item (e.g. "scout"), or a model selector (`provider/model[:effort]` / `@role[:effort]`) crewing the generic task agent. Defaults to the spawn policy's default agent. */
 	agent?: string;
 	/** The work; required by the schema. */
 	task?: string;
@@ -286,7 +286,7 @@ export function getTaskSchema(options: {
 export interface TaskParams {
 	/** Stable agent name (flat form). */
 	name?: string;
-	/** Agent type to spawn (flat form); omitted values resolve from the session spawn policy. */
+	/** Agent type to spawn (flat form), or a model selector (`provider/model[:effort]` / `@role[:effort]`) crewing the generic task agent; omitted values resolve from the session spawn policy. */
 	agent?: string;
 	/** The work (flat form). */
 	task?: string;
