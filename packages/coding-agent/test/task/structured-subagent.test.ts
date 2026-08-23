@@ -635,3 +635,114 @@ describe("structured subagent primitive", () => {
 		await fs.rm(settled.artifactsDir, { recursive: true, force: true });
 	});
 });
+
+describe("agent model selectors", () => {
+	const TASK_AGENT: AgentDefinition = {
+		name: "task",
+		description: "General-purpose task agent",
+		systemPrompt: "You are a task agent.",
+		source: "bundled",
+	};
+
+	const GPT4O = {
+		provider: "openai",
+		id: "gpt-4o",
+		reasoning: true,
+		thinking: { efforts: ["minimal", "low", "medium", "high"] },
+	};
+
+	function mockAgents(...agents: AgentDefinition[]): void {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
+			agents: agents.length > 0 ? agents : [AGENT, TASK_AGENT],
+			projectAgentsDir: null,
+		});
+	}
+
+	function withRegistry(base: ToolSession, models: unknown[] = [GPT4O], authed = true): ToolSession {
+		(base as { modelRegistry?: unknown }).modelRegistry = {
+			getAvailable: () => models,
+			hasConfiguredAuth: () => authed,
+		};
+		return base;
+	}
+
+	it("crews the generic task agent from a provider/model:effort selector", async () => {
+		mockAgents();
+		const policy = await resolveEffectiveSubagentPolicy(
+			request({ session: withRegistry(session()), agent: "openai/gpt-4o:high" }),
+		);
+		expect(policy.agentName).toBe("task");
+		expect(policy.agent.name).toBe("task");
+		expect(policy.modelOverride).toEqual(["openai/gpt-4o:high"]);
+		expect(policy.modelRole).toBeUndefined();
+
+		const auto = await resolveEffectiveSubagentPolicy(
+			request({ session: withRegistry(session()), agent: "openai/gpt-4o:auto" }),
+		);
+		expect(auto.modelOverride).toEqual(["openai/gpt-4o:auto"]);
+	});
+
+	it("lets a registered agent name win over selector interpretation", async () => {
+		const shadowed: AgentDefinition = { ...AGENT, name: "openai/gpt-4o", model: ["kimi-code/k3"] };
+		mockAgents(shadowed, TASK_AGENT);
+		const policy = await resolveEffectiveSubagentPolicy(
+			request({ session: withRegistry(session()), agent: "openai/gpt-4o" }),
+		);
+		expect(policy.agentName).toBe("openai/gpt-4o");
+		expect(policy.modelOverride).toEqual(["kimi-code/k3"]);
+	});
+
+	it("defers selector validation when no registry is attached", async () => {
+		mockAgents();
+		const policy = await resolveEffectiveSubagentPolicy(request({ agent: "openai/gpt-4o:high" }));
+		expect(policy.agentName).toBe("task");
+		expect(policy.modelOverride).toEqual(["openai/gpt-4o:high"]);
+	});
+
+	it("rejects an unknown model with nearest alternatives", async () => {
+		mockAgents();
+		// Near-miss ids (e.g. gpt-4oo) resolve through the grammar's fuzzy
+		// matching like every other selector surface; only a genuine miss errors.
+		await expect(
+			resolveEffectiveSubagentPolicy(request({ session: withRegistry(session()), agent: "openai/zonk-9000" })),
+		).rejects.toThrow('Unknown model "openai/zonk-9000" in agent selector "openai/zonk-9000". Nearest available: openai/gpt-4o');
+	});
+
+	it("rejects an unrecognized effort token naming the supported range", async () => {
+		mockAgents();
+		await expect(
+			resolveEffectiveSubagentPolicy(request({ session: withRegistry(session()), agent: "openai/gpt-4o:zigh" })),
+		).rejects.toThrow('Unsupported effort ":zigh" in agent selector "openai/gpt-4o:zigh". openai/gpt-4o supports: minimal, low, medium, high');
+	});
+
+	it("rejects a parseable effort the model cannot honor", async () => {
+		mockAgents();
+		await expect(
+			resolveEffectiveSubagentPolicy(request({ session: withRegistry(session()), agent: "openai/gpt-4o:xhigh" })),
+		).rejects.toThrow('Unsupported effort ":xhigh"');
+	});
+
+	it("rejects a resolved model without configured credentials", async () => {
+		mockAgents();
+		await expect(
+			resolveEffectiveSubagentPolicy(
+				request({ session: withRegistry(session(), [GPT4O], false), agent: "openai/gpt-4o" }),
+			),
+		).rejects.toThrow("has no configured credentials");
+	});
+
+	it("rejects an unknown @role naming known roles", async () => {
+		mockAgents();
+		await expect(
+			resolveEffectiveSubagentPolicy(request({ session: withRegistry(session()), agent: "@nosuchrole" })),
+		).rejects.toThrow('Unknown model role "@nosuchrole"');
+	});
+
+	it("accepts @role selectors and keeps the role identity", async () => {
+		mockAgents();
+		const roleSession = withRegistry(session({ modelRoles: { smol: "openai/gpt-4o" } }));
+		const policy = await resolveEffectiveSubagentPolicy(request({ session: roleSession, agent: "@smol:low" }));
+		expect(policy.agentName).toBe("task");
+		expect(policy.modelRole).toBe("smol");
+	});
+});

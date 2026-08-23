@@ -21,6 +21,7 @@ import type { ToolSession } from "../tools";
 import { isIrcEnabled } from "../tools/hub";
 import { buildOutputValidator } from "../tools/output-schema-validator";
 import { trackLateCleanup } from "../utils/late-cleanup";
+import { AgentSelectorError, isAgentModelSelector, validateAgentModelSelector } from "./agent-selector";
 import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
 import { type ExecutorOptions, runSubprocess } from "./executor";
 import { assertExternalHarnessCapabilities } from "./external-harness";
@@ -34,7 +35,7 @@ import {
 } from "./isolation-runner";
 import { generateTaskName } from "./name-generator";
 import { AgentOutputManager } from "./output-manager";
-import { resolveSpawnPolicy } from "./spawn-policy";
+import { DEFAULT_SPAWN_AGENT, resolveSpawnPolicy } from "./spawn-policy";
 import {
 	type AgentDefinition,
 	type AgentProgress,
@@ -248,13 +249,36 @@ export async function resolveEffectiveSubagentPolicy(
 ): Promise<EffectiveSubagentPolicy> {
 	await request.session.settings.reloadFromDisk();
 	const spawnPolicy = resolveSpawnPolicy(request.session.getSessionSpawns());
-	const agentName = request.agent?.trim() || spawnPolicy.defaultAgent;
+	const selector = request.agent?.trim() || spawnPolicy.defaultAgent;
+	const selectorShaped = isAgentModelSelector(selector);
 	const planMode = request.session.getPlanModeState?.()?.enabled === true;
 	assertPlanControlsAllowed(request, planMode);
-	assertDepthAndSpawnAllowed(request, agentName);
+	// Model-selector spawns run the generic task hull, so the spawn policy
+	// gates that vessel rather than the selector string. Registered names win
+	// below; the pathological registered-but-selector-shaped name is re-gated
+	// after discovery.
+	assertDepthAndSpawnAllowed(request, selectorShaped ? DEFAULT_SPAWN_AGENT : selector);
 
 	const discovery = await discoverAgents(request.session.cwd);
-	const agent = getAgent(discovery.agents, agentName);
+	let agentName = selector;
+	let agent = getAgent(discovery.agents, selector);
+	/** Model selector routed into the request-model channel for the generic task agent. */
+	let selectorModel: string | undefined;
+	if (agent && selectorShaped) {
+		assertDepthAndSpawnAllowed(request, selector);
+	} else if (!agent && selectorShaped) {
+		try {
+			validateAgentModelSelector(selector, request.session.modelRegistry, request.session.settings);
+		} catch (error) {
+			if (error instanceof AgentSelectorError) {
+				throw new StructuredSubagentError("preflight", error.message, { cause: error });
+			}
+			throw error;
+		}
+		selectorModel = selector;
+		agentName = DEFAULT_SPAWN_AGENT;
+		agent = getAgent(discovery.agents, agentName);
+	}
 	if (!agent) {
 		const available = discovery.agents.map(candidate => candidate.name).join(", ") || "none";
 		throw new StructuredSubagentError("preflight", `Unknown agent "${agentName}". Available: ${available}`);
@@ -293,7 +317,9 @@ export async function resolveEffectiveSubagentPolicy(
 	const agentModelOverrides = request.session.settings.get("task.agentModelOverrides");
 	const parentActiveModelPattern = request.session.getActiveModelString?.();
 	const modelResolution = {
-		requestModel: request.model,
+		// A model-selector `agent` value is the most explicit crew choice and
+		// outranks a separately supplied request model.
+		requestModel: selectorModel ?? request.model,
 		settingsOverride: agentModelOverrides[agentName],
 		agentModel: effectiveAgent.model,
 		settings: request.session.settings,
