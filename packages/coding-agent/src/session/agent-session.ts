@@ -6855,6 +6855,15 @@ export class AgentSession {
 		reason?: string;
 		/** Internal `/compact` startup keeps the manual-compaction marker alive while aborting the active turn. */
 		preserveCompaction?: boolean;
+		/**
+		 * Abort-and-replace callers (live voice handoffs) opt in to a bounded wait
+		 * for in-flight event handlers, so the torn-down turn's fire-and-forget
+		 * `agent_end` (see #inFlightEventHandlers) is normally delivered before the
+		 * caller claims new ownership. Best-effort: on timeout the caller MUST keep
+		 * its own suppression guard for the late settle. Plain Esc aborts skip this
+		 * so interactive interrupt latency is unchanged.
+		 */
+		drainSubscribers?: boolean;
 	}): Promise<void> {
 		const userInterrupt = options?.reason === USER_INTERRUPT_LABEL;
 		this.#pendingAbortErrorId = userInterrupt ? AIError.create(AIError.Flag.UserInterrupt) : undefined;
@@ -6894,6 +6903,18 @@ export class AgentSession {
 			this.agent.abort(options?.reason);
 			await postPromptDrain;
 			await this.agent.waitForIdle();
+			if (options?.drainSubscribers) {
+				// Best-effort happens-before for abort-and-replace: agent-core dispatches
+				// `agent_end` fire-and-forget, and #cancelPostPromptTasks snapshotted the
+				// task set BEFORE agent.abort(), so the torn-down turn's settle can still
+				// be running here. Bounded drain only — the timeout tail is covered by
+				// the caller's expected-aborted-settle token (LiveSessionController).
+				await withTimeout(
+					this.#drainInFlightEventHandlers(),
+					POST_PROMPT_DRAIN_TIMEOUT_MS,
+					"Timed out draining in-flight event handlers during abort",
+				).catch(error => logger.warn("Abort event-handler drain incomplete", { error: String(error) }));
+			}
 			// `/compact` disconnects the agent subscription until its finally block.
 			// Do not let abort-and-replace callers start a new prompt before that cleanup
 			// finishes, or the replacement turn's events are neither forwarded nor persisted.
