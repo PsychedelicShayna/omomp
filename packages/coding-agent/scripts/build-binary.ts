@@ -3,6 +3,12 @@
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import { compileCodingAgent } from "./compile-binary";
+import {
+	defaultOmompExtensionsDestDir,
+	defaultOmompExtensionsSourceDir,
+	formatOmompExtensionsResult,
+	installOmompExtensions,
+} from "../../../scripts/install-omomp-extensions";
 
 const packageDir = path.join(import.meta.dir, "..");
 const repoRoot = path.join(packageDir, "..", "..");
@@ -34,6 +40,25 @@ export function resolveCrossBuild(value: string | undefined): CrossBuild | null 
 			return { id: value, platform: "win32", arch: "x64", target: "bun-windows-x64-baseline" };
 		default:
 			throw new Error(`Unsupported CROSS_TARGET: ${value}`);
+	}
+}
+
+function isTruthyCi(value: string | undefined): boolean {
+	if (!value) return false;
+	const normalized = value.trim().toLowerCase();
+	return normalized !== "" && normalized !== "0" && normalized !== "false";
+}
+
+async function deployOmompExtensionsAfterBuild(outputPath: string): Promise<void> {
+	try {
+		const result = await installOmompExtensions({
+			sourceDir: defaultOmompExtensionsSourceDir(repoRoot),
+			destDir: defaultOmompExtensionsDestDir(),
+		});
+		console.log(`omomp extensions: ${formatOmompExtensionsResult(result)}`);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.warn(`omomp extensions: post-build deploy failed; binary is already at ${outputPath}: ${message}`);
 	}
 }
 
@@ -101,6 +126,10 @@ async function main(): Promise<void> {
 
 			if (shouldAdhocSign) {
 				await runCommand(["codesign", "--force", "--sign", "-", outputPath]);
+			}
+
+			if (!crossBuild && !isTruthyCi(Bun.env.CI) && Bun.env.OMOMP_SKIP_EXTENSION_INSTALL !== "1") {
+				await deployOmompExtensionsAfterBuild(outputPath);
 			}
 		} finally {
 			await runCommand(["bun", "--cwd=../natives", "run", "gen:native:reset"]);

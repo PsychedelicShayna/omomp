@@ -21,6 +21,17 @@ This repo contains multiple packages, but **`packages/coding-agent/`** is the pr
   global install onto the `omp` name, or any "replace the live binary" step.
 - If a previous mistake left a backup (e.g. `omp-*-backup-*`), restore `omp`
   from it immediately and keep fork builds only on `omomp`.
+- Installing `omomp` includes the fork extensions. After the binary is in
+  place, run `bun scripts/install-omomp-extensions.ts` so every
+  `extensions/*` directory is symlinked into the active profile's agent
+  `extensions/` dir (`getAgentDir()`; default `~/.omp/agent/extensions`).
+  Honors `PI_CONFIG_DIR`, `OMP_PROFILE`, and — on the default profile —
+  `PI_CODING_AGENT_DIR`. Same-named dest directories are renamed aside,
+  not deleted. The installer never removes unrelated user extensions.
+  `bun setup` and a local `packages/coding-agent` `bun run build` already
+  run it. An automatic post-build deploy failure warns and leaves the
+  binary in place; the explicit installer and `bun setup` still fail.
+
 
 
 ### Package Structure
