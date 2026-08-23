@@ -1,8 +1,10 @@
 import * as os from "node:os";
+import { appendFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { AudioCapture } from "@oh-my-pi/pi-natives";
-import { prompt } from "@oh-my-pi/pi-utils";
+import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
 import type { AgentSessionEvent } from "../session/agent-session-events";
 import { LIVE_DELEGATION_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
@@ -44,6 +46,14 @@ export interface LiveSessionCallbacks {
 	onTerminal(error?: Error): void;
 }
 
+/** Structural transport surface the controller needs (test seam). */
+export type LiveTransportLike = Pick<CodexLiveTransport, "connect" | "send" | "close" | "setMuted" | "pushAudio">;
+
+/** Structural recorder surface the controller needs (test seam). */
+export interface LiveRecorderLike {
+	stop(): void;
+}
+
 /** Dependencies and presentation callbacks for a live session. */
 export interface LiveSessionControllerOptions {
 	/** Agent session that performs all delegated coding work. */
@@ -54,6 +64,10 @@ export interface LiveSessionControllerOptions {
 	extractAssistantText(message: AssistantMessage): string;
 	/** Realtime output voice, defaulting to sol. */
 	voice?: string;
+	/** Test seam: builds the realtime transport; defaults to CodexLiveTransport. */
+	createTransport?(options: ConstructorParameters<typeof CodexLiveTransport>[0]): LiveTransportLike;
+	/** Test seam: builds the microphone recorder; defaults to the native AudioCapture. */
+	createRecorder?(sampleRate: number, callback: (error: Error | null, samples: Float32Array) => void): LiveRecorderLike;
 }
 
 function errorFrom(cause: unknown): Error {
@@ -117,8 +131,13 @@ export class LiveSessionController {
 	readonly #extractAssistantText: (message: AssistantMessage) => string;
 	readonly #voice: string;
 
-	#transport: CodexLiveTransport | undefined;
-	#recorder: AudioCapture | undefined;
+	readonly #createTransport: (options: ConstructorParameters<typeof CodexLiveTransport>[0]) => LiveTransportLike;
+	readonly #createRecorder: (
+		sampleRate: number,
+		callback: (error: Error | null, samples: Float32Array) => void,
+	) => LiveRecorderLike;
+	#transport: LiveTransportLike | undefined;
+	#recorder: LiveRecorderLike | undefined;
 	#unsubscribeSession: (() => void) | undefined;
 	#sendChain: Promise<void> = Promise.resolve();
 	#stopPromise: Promise<void> | undefined;
@@ -137,6 +156,24 @@ export class LiveSessionController {
 	 * open, so the next settle must not repeat an answer the caller already heard.
 	 */
 	#lastRelayedResponse: AgentMessage | undefined;
+	/** Monotonic voice-handoff generation; the newest survivor owns dispatch. */
+	#delegationGeneration = 0;
+	/** Requests not yet delivered to the backend; merged in arrival order by the newest survivor. */
+	#pendingDelegationRequests: string[] = [];
+	/** Coalesced in-flight live abort, so rapid handoffs never overlap AgentSession.abort(). */
+	#liveAbortPromise: Promise<void> | undefined;
+	/**
+	 * Expected obsolete aborted settles, one per live-handoff abort. Consumed by
+	 * the matching `agent_end` whose assistant message has stopReason "aborted".
+	 * Covers the bounded drain's timeout tail: a late settle from the torn-down
+	 * turn must not relay into — or close — the newly claimed delegation, which
+	 * would leave the genuine answer with nowhere to go.
+	 */
+	#expectedAbortedSettles = 0;
+	/** Serialized persistence tail for the live-transcript artifact (order + no double allocation). */
+	#transcriptLogChain: Promise<void> = Promise.resolve();
+	/** undefined = not yet allocated; null = permanently unavailable. */
+	#transcriptLogPath: string | undefined | null;
 	#userTranscript = "";
 	#assistantTranscript = "";
 	#userTranscriptFinal = false;
@@ -150,6 +187,9 @@ export class LiveSessionController {
 		this.#callbacks = options.callbacks;
 		this.#extractAssistantText = options.extractAssistantText;
 		this.#voice = options.voice?.trim() || DEFAULT_LIVE_VOICE;
+		this.#createTransport = options.createTransport ?? (transportOptions => new CodexLiveTransport(transportOptions));
+		this.#createRecorder =
+			options.createRecorder ?? ((sampleRate, callback) => new AudioCapture(sampleRate, callback));
 	}
 
 	/** Current realtime call phase. */
@@ -180,7 +220,7 @@ export class LiveSessionController {
 		try {
 			const user = currentUser();
 			const instructions = prompt.render(liveInstructionsTemplate, user);
-			const transport = new CodexLiveTransport({
+			const transport = this.#createTransport({
 				authStorage: this.#session.modelRegistry.authStorage,
 				sessionId: this.#session.sessionId,
 				instructions,
@@ -202,7 +242,7 @@ export class LiveSessionController {
 			if (this.#stopped) {
 				throw this.#failure ?? new Error("The live session stopped before recording began.");
 			}
-			const recorder = new AudioCapture(16_000, (error, samples) => {
+			const recorder = this.#createRecorder(16_000, (error, samples) => {
 				if (error) {
 					this.#reportFailure(error);
 					return;
@@ -252,6 +292,13 @@ export class LiveSessionController {
 		this.#stopped = true;
 		this.#unsubscribeSession?.();
 		this.#unsubscribeSession = undefined;
+		// Flush a mid-utterance user transcript (VAD-split or aborted turn) so the
+		// literal every-utterance guarantee covers interrupted speech, then drain
+		// pending transcript writes before teardown.
+		if (this.#userTranscript && !this.#userTranscriptFinal) {
+			this.#recordLiveTranscript("user", this.#userTranscript, false);
+		}
+		await this.#transcriptLogChain;
 		let cleanupError: Error | undefined;
 
 		const recorder = this.#recorder;
@@ -303,12 +350,14 @@ export class LiveSessionController {
 			case "unknown":
 				break;
 			case "input_transcript.added":
+				this.#recordLiveTranscript("user", event.item.text, false);
 				this.#addTranscript("user", event.item.text);
 				break;
 			case "output_transcript.added":
 				this.#addTranscript("assistant", event.item.text);
 				break;
 			case "turn.done":
+				this.#recordLiveTranscript(event.turn.role, event.turn.transcript, true);
 				this.#finishTranscript(event.turn.role, event.turn.transcript);
 				break;
 			case "delegation.created":
@@ -322,9 +371,11 @@ export class LiveSessionController {
 
 	/**
 	 * Deliver a Codex Realtime coding handoff to the main agent session.
-	 * Always aborts any in-flight backend turn first so the handoff is a fresh
-	 * prompt, not a steer queued under `interruptMode: wait` (live speech must
-	 * barge in immediately).
+	 * Newest intent wins: every delegation bumps a generation; whatever is still
+	 * unsent when a newer one arrives is merged, in arrival order, into the
+	 * newest survivor's single prompt. This is the committed voice contract
+	 * (live-instructions.md): split consecutive turns merge before delegation,
+	 * while a request arriving during active work barges in immediately.
 	 */
 	async #handleDelegation(event: Extract<LiveServerEvent, { type: "delegation.created" }>): Promise<void> {
 		let request = "";
@@ -335,26 +386,47 @@ export class LiveSessionController {
 		request = request.trim();
 		if (!request) return;
 
-		// Tear down the current turn before claiming this delegation id. Setting
-		// the id earlier would attribute the aborted turn's terminal agent_end to
-		// the new handoff.
+		const generation = ++this.#delegationGeneration;
+		this.#pendingDelegationRequests.push(request);
 		this.#emitPhase("working");
 		if (this.#session.isStreaming || this.#session.isBashRunning || this.#session.isEvalRunning) {
-			await this.#session.abort({ reason: USER_INTERRUPT_LABEL });
+			// Coalesce concurrent live aborts: AgentSession.abort() is not
+			// reentrant-safe, and every waiter only needs "some abort finished
+			// after I arrived". One expected settle per real abort, not per waiter.
+			if (!this.#liveAbortPromise) {
+				this.#expectedAbortedSettles += 1;
+				this.#liveAbortPromise = this.#session
+					.abort({ reason: USER_INTERRUPT_LABEL, drainSubscribers: true })
+					.finally(() => {
+						this.#liveAbortPromise = undefined;
+					});
+			}
+			await this.#liveAbortPromise;
 		}
 		if (this.#stopped) return;
+		// Superseded while awaiting: leave our request in the accumulator for the
+		// newest survivor to merge, and do nothing else — no claim, no dispatch.
+		if (generation !== this.#delegationGeneration) return;
 
+		const merged = this.#pendingDelegationRequests.splice(0).join("\n\n").trim();
+		if (!merged) return;
 		this.#activeDelegationId = event.item.id;
 		this.#lastRelayedResponse = undefined;
-		await this.#session.sendCustomMessage(
-			{
-				customType: LIVE_DELEGATION_MESSAGE_TYPE,
-				content: request,
-				display: true,
-				attribution: "agent",
-			},
-			{ triggerTurn: true },
-		);
+		try {
+			await this.#session.sendCustomMessage(
+				{
+					customType: LIVE_DELEGATION_MESSAGE_TYPE,
+					content: merged,
+					display: true,
+					attribution: "agent",
+				},
+				{ triggerTurn: true },
+			);
+		} catch (cause) {
+			// A newer delegation barging in aborts this turn mid-await; that
+			// rejection is expected and must not kill the live call.
+			if (generation === this.#delegationGeneration) throw cause;
+		}
 	}
 
 	#handleSessionEvent(event: AgentSessionEvent): void {
@@ -363,6 +435,20 @@ export class LiveSessionController {
 			return;
 		}
 		if (event.type !== "agent_end") return;
+		// Expected obsolete settle from a live-handoff abort: agent-core emits a
+		// fresh empty assistant message with stopReason "aborted" for a deliberate
+		// abort. Consume the token and ignore the settle entirely — relaying would
+		// be empty and closing would retire the delegation the NEW turn owns. All
+		// other terminal settles (including genuinely empty completions) keep
+		// closing unconditionally so a stale delegation id can never route later
+		// unrelated output into the voice call.
+		if (this.#expectedAbortedSettles > 0) {
+			const settled = [...event.messages].reverse().find(message => message?.role === "assistant");
+			if (settled?.role === "assistant" && settled.stopReason === "aborted") {
+				this.#expectedAbortedSettles -= 1;
+				return;
+			}
+		}
 		const { relay, closeDelegation } = classifyRelaySettle(event);
 		if (!relay) return;
 		this.#appendFinalResponse(event.messages, { closeDelegation });
@@ -488,6 +574,43 @@ export class LiveSessionController {
 			return;
 		}
 		this.#emitTranscript({ role, turn, text: normalized, final });
+	}
+
+	/**
+	 * Persist one raw transcript line to the session-scoped live-transcript
+	 * artifact. Recorded BEFORE UI dedupe on purpose: repeated identical
+	 * utterances and VAD-split fragments must all survive — the point of this
+	 * buffer is recovering utterances the voice model consumed. Serialized on a
+	 * single promise tail (ordering + no double allocation); never fatal to the
+	 * call; transcript text never appears in error logs (PII).
+	 */
+	#recordLiveTranscript(role: LiveTranscript["role"], text: string, final: boolean): void {
+		if (!text.trim()) return;
+		const line = JSON.stringify({ ts: new Date().toISOString(), role, final, text });
+		this.#transcriptLogChain = this.#transcriptLogChain
+			.then(() => this.#appendTranscriptLine(line))
+			.catch(error => {
+				logger.warn("Live transcript persistence failed", { error: String(error) });
+			});
+	}
+
+	async #appendTranscriptLine(line: string): Promise<void> {
+		if (this.#transcriptLogPath === null) return;
+		if (this.#transcriptLogPath === undefined) {
+			const allocated = await this.#session.sessionManager.allocateArtifactPath("live-transcript");
+			if (allocated.path) {
+				this.#transcriptLogPath = allocated.path;
+				logger.info("Live transcript artifact allocated", { id: allocated.id, path: allocated.path });
+			} else {
+				// Unpersisted session: keep the guarantee with a private tmp file
+				// (0600, wiped with tmp) rather than silently dropping utterances —
+				// but never a durable home-directory copy (voice transcripts are PII).
+				const fallback = join(os.tmpdir(), `omp-live-transcript-${Date.now()}.jsonl`);
+				this.#transcriptLogPath = fallback;
+				logger.warn("Session has no artifact store; live transcript using tmp fallback", { path: fallback });
+			}
+		}
+		await appendFile(this.#transcriptLogPath, `${line}\n`, { mode: 0o600 });
 	}
 
 	#queueSend(message: LiveClientMessage): void {
