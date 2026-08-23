@@ -1,7 +1,7 @@
 import { readFile, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { AgentProgress, SingleResult } from "../types";
-import { externalHarnessEnv, type ExternalHarnessAdapter, type ExternalHarnessInput } from "./types";
+import { type ExternalHarnessAdapter, type ExternalHarnessInput, externalHarnessEnv } from "./types";
 
 const MAX_FRAME_BYTES = 4 * 1024 * 1024;
 const MAX_STDERR_BYTES = 128 * 1024;
@@ -19,9 +19,7 @@ type PendingRequest = {
 };
 
 function object(value: unknown): JsonObject | undefined {
-	return value !== null && typeof value === "object" && !Array.isArray(value)
-		? (value as JsonObject)
-		: undefined;
+	return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : undefined;
 }
 
 function string(value: unknown): string | undefined {
@@ -81,7 +79,12 @@ function baseProgress(input: ExternalHarnessInput, startedAt: number): AgentProg
 }
 
 function scopeUnit(agentId: string): string {
-	const safeAgentId = agentId.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32) || "agent";
+	const safeAgentId =
+		agentId
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, "-")
+			.replace(/^-|-$/g, "")
+			.slice(0, 32) || "agent";
 	return `omp-codex-${process.pid}-${++scopeSequence}-${safeAgentId}.scope`;
 }
 
@@ -105,7 +108,9 @@ async function inspectScope(unit: string): Promise<{ activeState?: string; contr
 	const result = await systemctl("show", unit, "--property=ActiveState", "--property=ControlGroup");
 	if (result.exitCode !== 0) {
 		if (/not found|could not be found|not loaded/i.test(result.stderr)) return { members: [] };
-		throw new Error(`unable to verify Codex systemd scope ${unit}: ${result.stderr.trim() || `exit ${result.exitCode}`}`);
+		throw new Error(
+			`unable to verify Codex systemd scope ${unit}: ${result.stderr.trim() || `exit ${result.exitCode}`}`,
+		);
 	}
 	const properties = Object.fromEntries(
 		result.stdout
@@ -150,7 +155,10 @@ async function cleanupScope(unit: string): Promise<void> {
 	const deadline = Date.now() + DESCENDANT_DEATH_MS;
 	while (Date.now() < deadline) {
 		const state = await inspectScope(unit);
-		if (state.members.length === 0 && (!state.activeState || state.activeState === "inactive" || state.activeState === "failed")) {
+		if (
+			state.members.length === 0 &&
+			(!state.activeState || state.activeState === "inactive" || state.activeState === "failed")
+		) {
 			await systemctl("reset-failed", unit);
 			return;
 		}
@@ -233,7 +241,11 @@ export const codexExternalHarnessAdapter: ExternalHarnessAdapter = {
 			progress.toolCount = toolCount;
 			progress.currentTool = currentTool;
 			progress.recentOutput = [...output.split("\n"), ...reasoning.split("\n")].filter(Boolean).slice(-20);
-			input.onProgress({ ...progress, recentTools: [...progress.recentTools], recentOutput: [...progress.recentOutput] });
+			input.onProgress({
+				...progress,
+				recentTools: [...progress.recentTools],
+				recentOutput: [...progress.recentOutput],
+			});
 		};
 
 		const send = (message: JsonObject) => {
@@ -359,13 +371,18 @@ export const codexExternalHarnessAdapter: ExternalHarnessAdapter = {
 				case "turn/completed": {
 					const turn = object(params.turn);
 					turnStatus = string(turn?.status);
-					turnFailure = string(object(turn?.error)?.message) ?? (turn?.error ? JSON.stringify(turn.error) : undefined);
+					turnFailure =
+						string(object(turn?.error)?.message) ?? (turn?.error ? JSON.stringify(turn.error) : undefined);
 					requests++;
 					completedResolve();
 					break;
 				}
 				case "error":
-					completedReject(new Error(string(object(params.error)?.message) ?? string(params.message) ?? "Codex app-server error"));
+					completedReject(
+						new Error(
+							string(object(params.error)?.message) ?? string(params.message) ?? "Codex app-server error",
+						),
+					);
 					break;
 			}
 		};
@@ -382,10 +399,12 @@ export const codexExternalHarnessAdapter: ExternalHarnessAdapter = {
 					for (let newline = buffer.indexOf("\n"); newline >= 0; newline = buffer.indexOf("\n")) {
 						const line = buffer.slice(0, newline).trim();
 						buffer = buffer.slice(newline + 1);
-						if (Buffer.byteLength(line) > MAX_FRAME_BYTES) throw new Error("Codex app-server frame exceeded 4 MiB");
+						if (Buffer.byteLength(line) > MAX_FRAME_BYTES)
+							throw new Error("Codex app-server frame exceeded 4 MiB");
 						if (line) handle(object(JSON.parse(line)) ?? {}, generation);
 					}
-					if (Buffer.byteLength(buffer) > MAX_FRAME_BYTES) throw new Error("Codex app-server frame exceeded 4 MiB");
+					if (Buffer.byteLength(buffer) > MAX_FRAME_BYTES)
+						throw new Error("Codex app-server frame exceeded 4 MiB");
 				}
 				if (buffer.trim()) handle(object(JSON.parse(buffer)) ?? {}, generation);
 			} catch (error) {
@@ -432,7 +451,9 @@ export const codexExternalHarnessAdapter: ExternalHarnessAdapter = {
 			await Promise.race([
 				awaitScopeStarted(unit, child),
 				timedOut,
-				child.exited.then(code => Promise.reject(new Error(`Codex systemd scope failed during setup (code ${code})`))),
+				child.exited.then(code =>
+					Promise.reject(new Error(`Codex systemd scope failed during setup (code ${code})`)),
+				),
 			]);
 			const startup = async () => {
 				await request("initialize", {
@@ -457,15 +478,33 @@ export const codexExternalHarnessAdapter: ExternalHarnessAdapter = {
 					approvalPolicy: "never",
 					sandboxPolicy:
 						sandbox === "workspace-write"
-							? { type: "workspaceWrite", writableRoots: [await realpath(input.isolation.worktree!)], networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true }
+							? {
+									type: "workspaceWrite",
+									writableRoots: [await realpath(input.isolation.worktree!)],
+									networkAccess: false,
+									excludeTmpdirEnvVar: true,
+									excludeSlashTmp: true,
+								}
 							: { type: "readOnly", networkAccess: false },
 				});
 				turnId = string(object(turnResponse.turn)?.id);
 				if (!turnId) throw new Error("turn/start response omitted turn.id");
 				emit();
 			};
-			await Promise.race([startup(), timedOut, child.exited.then(code => Promise.reject(new Error(`Codex app-server exited during startup (code ${code})`)))]);
-			await Promise.race([completed, timedOut, child.exited.then(code => Promise.reject(new Error(`Codex app-server exited before turn/completed (code ${code})`)))]);
+			await Promise.race([
+				startup(),
+				timedOut,
+				child.exited.then(code =>
+					Promise.reject(new Error(`Codex app-server exited during startup (code ${code})`)),
+				),
+			]);
+			await Promise.race([
+				completed,
+				timedOut,
+				child.exited.then(code =>
+					Promise.reject(new Error(`Codex app-server exited before turn/completed (code ${code})`)),
+				),
+			]);
 		} catch (error) {
 			failure = error instanceof Error ? error : new Error(errorMessage(error));
 		} finally {
@@ -507,7 +546,7 @@ export const codexExternalHarnessAdapter: ExternalHarnessAdapter = {
 			contextWindow,
 			error: failure?.message ?? turnFailure,
 			aborted: aborted || undefined,
-			abortReason: aborted ? failure?.message ?? "Codex turn interrupted" : undefined,
+			abortReason: aborted ? (failure?.message ?? "Codex turn interrupted") : undefined,
 		};
 	},
 };

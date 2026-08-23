@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import path from "node:path";
 import type { Usage } from "@oh-my-pi/pi-ai";
 import type { AgentProgress, SingleResult } from "../types";
-import { externalHarnessEnv, type ExternalHarnessAdapter, type ExternalHarnessInput } from "./types";
+import { type ExternalHarnessAdapter, type ExternalHarnessInput, externalHarnessEnv } from "./types";
 
 const PYTHON = "/home/shayna/.omp/python-env/bin/python";
 const SIDECAR = path.join(import.meta.dir, "claude-sidecar.py");
@@ -66,10 +66,7 @@ function killProcessGroup(pid: number, signal: NodeJS.Signals): void {
 async function terminate(proc: Bun.Subprocess): Promise<void> {
 	if (proc.exitCode !== null) return;
 	killProcessGroup(proc.pid, "SIGTERM");
-	const exited = await Promise.race([
-		proc.exited.then(() => true),
-		Bun.sleep(TERMINATE_GRACE_MS).then(() => false),
-	]);
+	const exited = await Promise.race([proc.exited.then(() => true), Bun.sleep(TERMINATE_GRACE_MS).then(() => false)]);
 	if (!exited) killProcessGroup(proc.pid, "SIGKILL");
 }
 async function* lines(stream: ReadableStream<Uint8Array>): AsyncGenerator<string> {
@@ -91,7 +88,6 @@ async function* lines(stream: ReadableStream<Uint8Array>): AsyncGenerator<string
 	if (buffered) yield buffered;
 }
 
-
 function usageFrom(message: Extract<SidecarMessage, { type: "result" }>): Usage | undefined {
 	const raw = message.usage;
 	if (!raw) return undefined;
@@ -99,10 +95,7 @@ function usageFrom(message: Extract<SidecarMessage, { type: "result" }>): Usage 
 	const output = raw.output_tokens ?? 0;
 	const cacheRead = raw.cache_read_input_tokens ?? 0;
 	const cacheWrite = raw.cache_creation_input_tokens ?? 0;
-	const totalCost = Object.values(message.modelUsage ?? {}).reduce(
-		(sum, model) => sum + (model.costUSD ?? 0),
-		0,
-	);
+	const totalCost = Object.values(message.modelUsage ?? {}).reduce((sum, model) => sum + (model.costUSD ?? 0), 0);
 	return {
 		input,
 		output,
@@ -207,10 +200,13 @@ export class ClaudeExternalHarnessAdapter implements ExternalHarnessAdapter {
 					input.agent.systemPrompt,
 					`OMP parent session: ${input.parent.parentSessionId}`,
 					`OMP inherited extension state: ${JSON.stringify(input.parent.inheritedExtensionState)}`,
-				].filter(Boolean).join("\n\n"),
+				]
+					.filter(Boolean)
+					.join("\n\n"),
 			});
 			for await (const line of lines(stdout)) {
-				if (Buffer.byteLength(line) > MAX_FRAME_BYTES) throw new Error("Claude sidecar output frame exceeded 1 MiB");
+				if (Buffer.byteLength(line) > MAX_FRAME_BYTES)
+					throw new Error("Claude sidecar output frame exceeded 1 MiB");
 				const message = JSON.parse(line) as SidecarMessage;
 				if (message.type === "metadata") {
 					sessionId = message.sessionId ?? sessionId;
@@ -224,7 +220,9 @@ export class ClaudeExternalHarnessAdapter implements ExternalHarnessAdapter {
 					progress.currentToolArgs = args;
 					progress.currentToolStartMs = Date.now();
 					progress.toolCount++;
-					progress.recentTools = [...progress.recentTools, { tool: message.name, args, endMs: Date.now() }].slice(-MAX_RECENT_TOOLS);
+					progress.recentTools = [...progress.recentTools, { tool: message.name, args, endMs: Date.now() }].slice(
+						-MAX_RECENT_TOOLS,
+					);
 				} else if (message.type === "result") {
 					final = message;
 					sessionId = message.sessionId ?? sessionId;
@@ -238,7 +236,8 @@ export class ClaudeExternalHarnessAdapter implements ExternalHarnessAdapter {
 			}
 			writer.end();
 			await proc.exited;
-			if (!final && !failure) failure = (await new Response(stderr).text()).trim() || "Claude sidecar exited without a result";
+			if (!final && !failure)
+				failure = (await new Response(stderr).text()).trim() || "Claude sidecar exited without a result";
 		} catch (error) {
 			failure = error instanceof Error ? error.message : String(error);
 		} finally {

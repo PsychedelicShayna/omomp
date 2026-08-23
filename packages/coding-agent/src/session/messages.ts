@@ -955,7 +955,6 @@ export interface EvalExecutionMessage {
 	meta?: ExecutionOutputMeta;
 }
 
-
 /**
  * Legacy Python-only execution message. Decoder migration may read this shape;
  * new writers must emit {@link EvalExecutionMessage}.

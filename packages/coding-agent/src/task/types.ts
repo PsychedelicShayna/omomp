@@ -361,7 +361,6 @@ export interface ParentSessionMetadata {
 	readonly inheritedExtensionState: Readonly<Record<string, unknown>>;
 }
 
-
 /** Agent definition (bundled or discovered) */
 export interface AgentDefinition {
 	name: string;

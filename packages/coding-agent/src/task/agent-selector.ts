@@ -147,11 +147,7 @@ export function validateAgentModelSelector(
  * `auto`, `max`, and `off` sentinels always pass: they map onto whatever the
  * model actually supports instead of requesting a fixed level.
  */
-function assertEffortSupported(
-	selector: string,
-	model: Model<Api>,
-	level: ConfiguredThinkingLevel | undefined,
-): void {
+function assertEffortSupported(selector: string, model: Model<Api>, level: ConfiguredThinkingLevel | undefined): void {
 	const concrete = concreteThinkingLevel(level);
 	if (concrete === undefined || concrete === ThinkingLevel.Off || concrete === ThinkingLevel.Max) return;
 	const effort = toReasoningEffort(concrete);

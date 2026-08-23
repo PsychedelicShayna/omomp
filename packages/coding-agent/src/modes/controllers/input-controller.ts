@@ -17,8 +17,7 @@ import { expandEmoticons } from "../../modes/emoji-autocomplete";
 import { materializeImageReferenceLinks, setCachedImageDimensions } from "../../modes/image-references";
 import { createPromptActionAutocompleteProvider } from "../../modes/prompt-action-autocomplete";
 import { parseQueueShorthand, splitQueuedMessages } from "../../modes/queue-input";
-import { buildSkillCommandPrompt, invokeSkillCommandFromText, isKnownSkillCommand } from "../../modes/skill-command";
-import { parseReplEvalInput } from "./repl-input";
+import { buildSkillCommandPrompt, isKnownSkillCommand } from "../../modes/skill-command";
 import type { InteractiveModeContext } from "../../modes/types";
 import manualContinuePrompt from "../../prompts/system/manual-continue.md" with { type: "text" };
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
@@ -40,6 +39,7 @@ import { EnhancedPasteController } from "../../utils/enhanced-paste";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import { ensureSupportedImageInput, ImageInputTooLargeError, loadImageInput } from "../../utils/image-loading";
 import { resizeImage } from "../../utils/image-resize";
+import { parseReplEvalInput } from "./repl-input";
 
 /**
  * Slash commands that may carry secrets in their arguments should never be
@@ -90,7 +90,6 @@ interface PasteTarget {
 function hasPasteText(value: unknown): value is PasteTarget {
 	return typeof value === "object" && value !== null && typeof (value as PasteTarget).pasteText === "function";
 }
-
 
 /** Wrap pasted text in `<attachment>` tags so the model treats it as one quoted block. */
 function wrapPasteInAttachmentBlock(content: string): string {

@@ -298,11 +298,9 @@ export async function resolveEffectiveSubagentPolicy(
 	try {
 		assertExternalHarnessCapabilities(effectiveAgent);
 	} catch (error) {
-		throw new StructuredSubagentError(
-			"preflight",
-			error instanceof Error ? error.message : String(error),
-			{ cause: error },
-		);
+		throw new StructuredSubagentError("preflight", error instanceof Error ? error.message : String(error), {
+			cause: error,
+		});
 	}
 	const schema = resolveSchema(request, effectiveAgent);
 	if (schema.source !== "none") {

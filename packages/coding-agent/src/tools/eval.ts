@@ -16,7 +16,6 @@ import { defaultEvalSessionId } from "../eval/session-id";
 import type { EvalCellResult, EvalDisplayOutput, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
 import evalDescription from "../prompts/tools/eval.md" with { type: "text" };
 import evalCodeModeDescription from "../prompts/tools/eval-code-mode.md" with { type: "text" };
-import { resolveCodeMode } from "../session/code-mode";
 import { extensionBackendAdapter, registryForToolSession } from "../session/eval-service";
 import { DEFAULT_MAX_BYTES, OutputSink, type OutputSummary, TailBuffer } from "../session/streaming-output";
 import { resolveSpawnPolicy } from "../task/spawn-policy";
@@ -72,11 +71,13 @@ function describeCodeField(langs: readonly string[]): string {
 }
 
 function summarizeEvalLanguages(langs: readonly string[], session?: ToolSession | null): string {
-	const registered = session ? registryForToolSession(session)?.modelVisibleBackends() ?? [] : [];
+	const registered = session ? (registryForToolSession(session)?.modelVisibleBackends() ?? []) : [];
 	const labels = new Map(registered.map(backend => [backend.id, backend.label]));
 	const names = langs.map(lang => EVAL_LANGUAGE_NAME[lang as EvalLanguageToken] ?? labels.get(lang) ?? lang);
 	const list = names.length > 0 ? joinWithOr(names) : "Python or JavaScript";
-	const backend = langs.some(lang => lang === "rb" || lang === "jl" || labels.has(lang)) ? "a persistent" : "an in-process";
+	const backend = langs.some(lang => lang === "rb" || lang === "jl" || labels.has(lang))
+		? "a persistent"
+		: "an in-process";
 	return `Execute ${list} code in ${backend} eval backend`;
 }
 
@@ -425,10 +426,12 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 	#enabledLanguages(): string[] {
 		const builtins = this.session ? enabledEvalLanguages(resolveEvalBackends(this.session)) : ["py", "js"];
 		if (!this.session) return builtins;
-		const registered = registryForToolSession(this.session)?.modelVisibleBackends().map(backend => backend.id) ?? [];
+		const registered =
+			registryForToolSession(this.session)
+				?.modelVisibleBackends()
+				.map(backend => backend.id) ?? [];
 		return [...builtins, ...registered];
 	}
-
 
 	constructor(
 		private readonly session: ToolSession | null,

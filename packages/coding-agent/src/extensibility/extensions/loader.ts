@@ -182,7 +182,6 @@ class ConcreteExtensionAPI implements ExtensionAPI {
 		this.extension.handlers.set(event, list);
 	}
 
-
 	registerEvalBackend(backend: ExtensionEvalBackend): void {
 		this.runtime.registerEvalBackend(backend);
 	}

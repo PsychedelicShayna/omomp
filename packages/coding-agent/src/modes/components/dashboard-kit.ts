@@ -6,8 +6,6 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
-import { keyHint, rawKeyHint } from "./keybinding-hints";
-import { bottomBorder, divider, row as overlayRow, topBorder } from "./overlay-box";
 import { theme } from "../theme/theme";
 import {
 	matchesSelectCancel,
@@ -16,6 +14,8 @@ import {
 	matchesSelectPageUp,
 	matchesSelectUp,
 } from "../utils/keybinding-matchers";
+import { keyHint, rawKeyHint } from "./keybinding-hints";
+import { bottomBorder, divider, row as overlayRow, topBorder } from "./overlay-box";
 
 /** A volatile, complete snapshot of rows displayed by a dashboard. */
 export interface DashboardDataSource<Row extends { id: string }> {
@@ -546,8 +546,7 @@ export class DashboardMount<Row extends { id: string }> {
 		if (current !== null) return current;
 		const rows = this.selection.rows;
 		if (rows.length === 0) return null;
-		const preferred =
-			preferredId != null && rows.some(row => row.id === preferredId) ? preferredId : rows[0]!.id;
+		const preferred = preferredId != null && rows.some(row => row.id === preferredId) ? preferredId : rows[0]!.id;
 		return this.select(preferred);
 	}
 

@@ -1,7 +1,7 @@
+import type { AgentDefinition } from "../types";
 import { claudeExternalHarnessAdapter } from "./claude";
 import { codexExternalHarnessAdapter } from "./codex";
 import type { ExternalHarnessAdapter } from "./types";
-import type { AgentDefinition } from "../types";
 
 export { ClaudeExternalHarnessAdapter, claudeExternalHarnessAdapter } from "./claude";
 export { codexExternalHarnessAdapter } from "./codex";
@@ -10,7 +10,6 @@ export type {
 	ExternalHarnessInput,
 	ExternalHarnessIsolationContext,
 } from "./types";
-
 
 const CLAUDE_TOOLS = new Set(["read", "grep", "glob", "web_search", "web_fetch", "edit", "write", "yield"]);
 

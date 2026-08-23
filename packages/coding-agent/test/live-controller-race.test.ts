@@ -20,13 +20,13 @@
  * 6. Fleet feed: reasoning narration flushes once at a sentence boundary and
  *    never re-sends already-narrated thinking.
  */
+
+import { describe, expect, it } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session-events";
 import { LiveSessionController } from "../src/live/controller";

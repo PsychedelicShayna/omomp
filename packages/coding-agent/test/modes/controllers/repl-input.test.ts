@@ -12,7 +12,7 @@ describe("parseReplEvalInput", () => {
 		});
 		expect(parseReplEvalInput("$$ console.log('js')")).toMatchObject({ language: "js", alias: "$" });
 		expect(parseReplEvalInput("$r puts 'rb'")).toMatchObject({ language: "rb", alias: "r" });
-		expect(parseReplEvalInput("$j println(\"jl\")")).toMatchObject({ language: "jl", alias: "j" });
+		expect(parseReplEvalInput('$j println("jl")')).toMatchObject({ language: "jl", alias: "j" });
 		expect(parseReplEvalInput("$! printf shell")).toMatchObject({ language: "sh", alias: "!" });
 	});
 

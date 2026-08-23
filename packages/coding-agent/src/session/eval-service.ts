@@ -1,6 +1,6 @@
-import type { ToolSession } from "../tools";
 import type { ExecutorBackend, ExecutorBackendExecOptions, ExecutorBackendResult } from "../eval/backend";
 import type { ExtensionEvalBackend } from "../extensibility/extensions/types";
+import type { ToolSession } from "../tools";
 
 const EVAL_BACKEND_TOKEN = /^[a-z][a-z0-9_-]*$/;
 const BUILTIN_EVAL_TOKENS = new Set(["py", "python", "js", "javascript", "rb", "ruby", "jl", "julia"]);
@@ -23,7 +23,8 @@ export class EvalBackendRegistry {
 		const keys = [...new Set([id, ...aliases])];
 		if (keys.length !== aliases.length + 1) throw new Error(`Eval backend "${id}" contains a duplicate alias`);
 		for (const key of keys) {
-			if (BUILTIN_EVAL_TOKENS.has(key)) throw new Error(`Eval backend token "${key}" is reserved by a built-in backend`);
+			if (BUILTIN_EVAL_TOKENS.has(key))
+				throw new Error(`Eval backend token "${key}" is reserved by a built-in backend`);
 		}
 		for (const key of keys) {
 			const owner = this.#byKey.get(key);

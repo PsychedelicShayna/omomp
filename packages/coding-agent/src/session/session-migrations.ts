@@ -1,5 +1,5 @@
 import { Snowflake } from "@oh-my-pi/pi-utils";
-import { type CompactionEntry, CURRENT_SESSION_VERSION, type FileEntry, type SessionHeader } from "./session-entries";
+import type { CompactionEntry, FileEntry, SessionHeader } from "./session-entries";
 
 /** Generate a unique short ID (8 hex chars, collision-checked) */
 export function generateId(byId: { has(id: string): boolean }): string {

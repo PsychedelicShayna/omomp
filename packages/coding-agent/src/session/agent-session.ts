@@ -106,17 +106,18 @@ import type { ModelRegistry } from "../config/model-registry";
 import { type ResolvedModelRoleValue, resolveModelOverride } from "../config/model-resolver";
 import { expandPromptTemplate, type PromptTemplate } from "../config/prompt-templates";
 import { buildServiceTierByFamily } from "../config/service-tier";
-import { Settings, type SkillsSettings } from "../config/settings";
 import {
 	onAppendOnlyModeChanged,
 	onCodeModeChanged,
 	onExtendedContextChanged,
 	onModelRolesChanged,
+	Settings,
+	type SkillsSettings,
 } from "../config/settings";
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
 import { getFileSnapshotStore } from "../edit/file-snapshot-store";
-import type { PythonResult } from "../eval/py/executor";
 import type { ExecutorBackendResult } from "../eval/backend";
+import type { PythonResult } from "../eval/py/executor";
 import type { BashResult } from "../exec/bash-executor";
 import type { TtsrManager } from "../export/ttsr";
 import type { LoadedCustomCommand } from "../extensibility/custom-commands";
@@ -194,7 +195,7 @@ import {
 } from "../thinking";
 import { isLowSignalTitleInput } from "../tiny/text";
 import { shutdownTinyTitleClient } from "../tiny/title-client";
-import type { ImageAttachmentEntry } from "../tools";
+import type { ImageAttachmentEntry, ToolSession } from "../tools";
 import { resolveApproval } from "../tools/approval";
 import { type AskToolDetails, type AskToolInput, recoverAskQuestions } from "../tools/ask";
 import { releaseTabsForOwner } from "../tools/browser/tab-supervisor";
@@ -212,7 +213,6 @@ import {
 import { supportsExternalThinking } from "../tools/think";
 import type { TodoPhase } from "../tools/todo";
 import { ToolError } from "../tools/tool-errors";
-import type { ToolSession } from "../tools";
 import { parseCommandArgs } from "../utils/command-args";
 import type { EditMode } from "../utils/edit-mode";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";

@@ -18,10 +18,10 @@ import {
 	bashExecutionToText,
 	type CompactionSummaryMessage,
 	type CustomMessage,
-	type FileMentionMessage,
-	type HookMessage,
 	type EvalExecutionMessage,
 	evalExecutionToText,
+	type FileMentionMessage,
+	type HookMessage,
 } from "./messages";
 
 /** Minimal tool shape for dump output (matches AgentTool fields used by formatSessionDumpText). */

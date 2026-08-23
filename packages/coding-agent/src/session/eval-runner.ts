@@ -99,7 +99,11 @@ export class EvalRunner {
 	}
 
 	/** Compatibility caller surface; new user-input routing calls execute("py", ...). */
-	executePython(code: string, onChunk?: (chunk: string) => void, options?: UserEvalOptions): Promise<ExecutorBackendResult> {
+	executePython(
+		code: string,
+		onChunk?: (chunk: string) => void,
+		options?: UserEvalOptions,
+	): Promise<ExecutorBackendResult> {
 		return this.execute("py", code, onChunk, options);
 	}
 
@@ -114,10 +118,12 @@ export class EvalRunner {
 			jl: juliaBackend,
 			julia: juliaBackend,
 		};
-		const backend = builtin[token] ?? (() => {
-			const registered = evalBackendRegistry(this.#host.sessionManager).resolve(token);
-			return registered ? extensionBackendAdapter(registered) : undefined;
-		})();
+		const backend =
+			builtin[token] ??
+			(() => {
+				const registered = evalBackendRegistry(this.#host.sessionManager).resolve(token);
+				return registered ? extensionBackendAdapter(registered) : undefined;
+			})();
 		if (!backend) throw new Error(`Unknown eval backend: ${token}`);
 		if (!(await backend.isAvailable(session))) throw new Error(`Eval backend "${token}" is unavailable`);
 		return backend;
@@ -130,10 +136,12 @@ export class EvalRunner {
 	trackExecution<T>(execution: Promise<T>, abortController: AbortController, language?: string): Promise<T> {
 		this.#abortControllers.set(abortController, language ?? "unknown");
 		this.#activeExecutions.add(execution);
-		void execution.finally(() => {
-			this.#abortControllers.delete(abortController);
-			this.#activeExecutions.delete(execution);
-		}).catch(() => undefined);
+		void execution
+			.finally(() => {
+				this.#abortControllers.delete(abortController);
+				this.#activeExecutions.delete(execution);
+			})
+			.catch(() => undefined);
 		return execution;
 	}
 
@@ -159,7 +167,9 @@ export class EvalRunner {
 		void evalBackendRegistry(this.#host.sessionManager).interrupt();
 	}
 
-	get isRunning(): boolean { return this.#abortControllers.size > 0; }
+	get isRunning(): boolean {
+		return this.#abortControllers.size > 0;
+	}
 
 	/** Whether a specific language/backend has an active execution. */
 	isLanguageRunning(language: string): boolean {
@@ -169,8 +179,12 @@ export class EvalRunner {
 		}
 		return false;
 	}
-	get hasPendingMessages(): boolean { return this.#pendingMessages.length > 0; }
-	getKernelOwnerId(): string { return this.#kernelOwnerId; }
+	get hasPendingMessages(): boolean {
+		return this.#pendingMessages.length > 0;
+	}
+	getKernelOwnerId(): string {
+		return this.#kernelOwnerId;
+	}
 	getSessionId(): string | null {
 		if (this.#parentSessionId !== undefined) return this.#parentSessionId;
 		return defaultEvalSessionId({
@@ -182,7 +196,9 @@ export class EvalRunner {
 		for (const message of this.#pendingMessages) this.#host.appendSessionMessage(message);
 		this.#pendingMessages = [];
 	}
-	beginDispose(): void { this.#disposing = true; }
+	beginDispose(): void {
+		this.#disposing = true;
+	}
 
 	async disposeKernels(): Promise<void> {
 		const settled = await this.#prepareExecutionsForDispose();
@@ -221,11 +237,20 @@ export class EvalRunner {
 	/** Normalize language aliases to canonical tokens for per-language tracking. */
 	#canonicalLanguage(token: string): string {
 		switch (token) {
-			case "py": case "python": return "py";
-			case "js": case "javascript": return "js";
-			case "rb": case "ruby": return "rb";
-			case "jl": case "julia": return "jl";
-			default: return token;
+			case "py":
+			case "python":
+				return "py";
+			case "js":
+			case "javascript":
+				return "js";
+			case "rb":
+			case "ruby":
+				return "rb";
+			case "jl":
+			case "julia":
+				return "jl";
+			default:
+				return token;
 		}
 	}
 }

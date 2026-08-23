@@ -15,9 +15,9 @@ import type {
 	BranchSummaryMessage,
 	CompactionSummaryMessage,
 	CustomMessage,
+	EvalExecutionMessage,
 	FileMentionMessage,
 	HookMessage,
-	EvalExecutionMessage,
 	PythonExecutionMessage,
 } from "./messages";
 

@@ -705,14 +705,18 @@ describe("agent model selectors", () => {
 		// matching like every other selector surface; only a genuine miss errors.
 		await expect(
 			resolveEffectiveSubagentPolicy(request({ session: withRegistry(session()), agent: "openai/zonk-9000" })),
-		).rejects.toThrow('Unknown model "openai/zonk-9000" in agent selector "openai/zonk-9000". Nearest available: openai/gpt-4o');
+		).rejects.toThrow(
+			'Unknown model "openai/zonk-9000" in agent selector "openai/zonk-9000". Nearest available: openai/gpt-4o',
+		);
 	});
 
 	it("rejects an unrecognized effort token naming the supported range", async () => {
 		mockAgents();
 		await expect(
 			resolveEffectiveSubagentPolicy(request({ session: withRegistry(session()), agent: "openai/gpt-4o:zigh" })),
-		).rejects.toThrow('Unsupported effort ":zigh" in agent selector "openai/gpt-4o:zigh". openai/gpt-4o supports: minimal, low, medium, high');
+		).rejects.toThrow(
+			'Unsupported effort ":zigh" in agent selector "openai/gpt-4o:zigh". openai/gpt-4o supports: minimal, low, medium, high',
+		);
 	});
 
 	it("rejects a parseable effort the model cannot honor", async () => {

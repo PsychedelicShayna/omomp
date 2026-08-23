@@ -102,30 +102,30 @@ function addUsageTotals(target: Usage, usage: Partial<Usage>): void {
 export { loadBundledAgents as BUNDLED_AGENTS } from "./agents";
 export { discoverCommands, expandCommand, getCommand } from "./commands";
 export { discoverAgents, getAgent } from "./discovery";
-export { AgentOutputManager } from "./output-manager";
-export * from "./read-only-policy";
-export type {
-	AgentDefinition,
-	AgentProgress,
-	SingleResult,
-	ParentSessionMetadata,
-	SubagentEventPayload,
-	SubagentLifecyclePayload,
-	SubagentProgressPayload,
-	TaskParams,
-	TaskToolDetails,
-} from "./types";
-export type {
-	ExternalHarnessAdapter,
-	ExternalHarnessInput,
-	ExternalHarnessIsolationContext,
-} from "./external-harness/types";
 export {
 	ClaudeExternalHarnessAdapter,
 	claudeExternalHarnessAdapter,
 	codexExternalHarnessAdapter,
 	getExternalHarnessAdapter,
 } from "./external-harness";
+export type {
+	ExternalHarnessAdapter,
+	ExternalHarnessInput,
+	ExternalHarnessIsolationContext,
+} from "./external-harness/types";
+export { AgentOutputManager } from "./output-manager";
+export * from "./read-only-policy";
+export type {
+	AgentDefinition,
+	AgentProgress,
+	ParentSessionMetadata,
+	SingleResult,
+	SubagentEventPayload,
+	SubagentLifecyclePayload,
+	SubagentProgressPayload,
+	TaskParams,
+	TaskToolDetails,
+} from "./types";
 export {
 	TASK_SUBAGENT_EVENT_CHANNEL,
 	TASK_SUBAGENT_LIFECYCLE_CHANNEL,

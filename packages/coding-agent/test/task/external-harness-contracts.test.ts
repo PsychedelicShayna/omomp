@@ -1,19 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
+import {
+	type AgentDefinition,
+	type SingleResult,
+	type SubagentLifecyclePayload,
+	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
+} from "@oh-my-pi/pi-coding-agent/task/types";
+import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import {
 	assertExternalHarnessCapabilities,
 	ClaudeExternalHarnessAdapter,
 	claudeExternalHarnessAdapter,
 } from "../../src/task/external-harness";
-import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
-import {
-	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
-	type AgentDefinition,
-	type SingleResult,
-	type SubagentLifecyclePayload,
-} from "@oh-my-pi/pi-coding-agent/task/types";
-import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 
 const claudeAgent: AgentDefinition = {
 	name: "claude-contract",

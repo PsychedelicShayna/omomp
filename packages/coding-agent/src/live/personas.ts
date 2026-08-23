@@ -251,7 +251,7 @@ export async function resolveLiveInstructions(statePath?: string): Promise<strin
 	const active = state.active;
 	if (!active || active === DEFAULT_LIVE_PERSONA) return liveInstructionsTemplate;
 	const definition = state.personas[active];
-	if (!definition || !definition.instructions.trim()) {
+	if (!definition?.instructions.trim()) {
 		logger.warn("Active live persona missing or empty; using default live instructions", {
 			path: store.path,
 			active,

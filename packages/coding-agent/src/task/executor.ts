@@ -61,8 +61,8 @@ import { trackLateCleanup } from "../utils/late-cleanup";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { WorkspaceTree } from "../workspace-tree";
 import { attributeSubagentError } from "./error-attribution";
-import { generateTaskLabel } from "./label";
 import { getExternalHarnessAdapter } from "./external-harness";
+import { generateTaskLabel } from "./label";
 import { resolveAgentPrewalkDefault } from "./prewalk";
 import { isReadOnlyAgent } from "./read-only-policy";
 import { subprocessToolRegistry } from "./subprocess-tool-registry";
@@ -2672,8 +2672,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		onProgress,
 	} = options;
 	const providedSettings = options.settings;
-	const modelOverride =
-		explicitModelOverride ?? providedSettings?.get("task.agentModelOverrides")?.[agent.name];
+	const modelOverride = explicitModelOverride ?? providedSettings?.get("task.agentModelOverrides")?.[agent.name];
 	const cleanupGraceMs = options.cleanupGraceMs ?? TASK_ABORT_CLEANUP_GRACE_MS;
 	const startTime = Date.now();
 	// Set by the session's onFirstChatDispatch hook the first time the agent
@@ -2717,16 +2716,11 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			deadlineAt === undefined
 				? undefined
 				: setTimeout(
-						() =>
-							deadlineController.abort(
-								`Subagent runtime limit exceeded (task.maxRuntimeMs=${maxRuntimeMs})`,
-							),
+						() => deadlineController.abort(`Subagent runtime limit exceeded (task.maxRuntimeMs=${maxRuntimeMs})`),
 						Math.max(0, deadlineAt - Date.now()),
 					);
 		deadlineTimer?.unref();
-		const externalSignal = signal
-			? AbortSignal.any([signal, deadlineController.signal])
-			: deadlineController.signal;
+		const externalSignal = signal ? AbortSignal.any([signal, deadlineController.signal]) : deadlineController.signal;
 		const monitor = createSubagentRunMonitor({
 			index,
 			id,

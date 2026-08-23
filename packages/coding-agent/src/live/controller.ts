@@ -1,5 +1,5 @@
-import * as os from "node:os";
 import { appendFile } from "node:fs/promises";
+import * as os from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
@@ -8,13 +8,13 @@ import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
 import type { AgentSessionEvent } from "../session/agent-session-events";
 import { type CustomMessage, LIVE_DELEGATION_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
-import agentFinalMessageTemplate from "./prompts/agent-final-message.md" with { type: "text" };
 import { resolveLiveInstructions } from "./personas";
+import agentFinalMessageTemplate from "./prompts/agent-final-message.md" with { type: "text" };
 import {
 	buildDelegationContextAppend,
-	CONTEXT_CHUNK_BYTES,
 	buildSessionClose,
 	buildSessionContextAppend,
+	CONTEXT_CHUNK_BYTES,
 	chunkLiveContext,
 	type LiveClientMessage,
 	type LiveServerEvent,
@@ -69,7 +69,10 @@ export interface LiveSessionControllerOptions {
 	/** Test seam: builds the realtime transport; defaults to CodexLiveTransport. */
 	createTransport?(options: ConstructorParameters<typeof CodexLiveTransport>[0]): LiveTransportLike;
 	/** Test seam: builds the microphone recorder; defaults to the native AudioCapture. */
-	createRecorder?(sampleRate: number, callback: (error: Error | null, samples: Float32Array) => void): LiveRecorderLike;
+	createRecorder?(
+		sampleRate: number,
+		callback: (error: Error | null, samples: Float32Array) => void,
+	): LiveRecorderLike;
 }
 
 function errorFrom(cause: unknown): Error {

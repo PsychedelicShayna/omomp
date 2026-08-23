@@ -25,10 +25,10 @@ import type { CompactionMethod } from "./compaction-methods";
 import {
 	type BashExecutionMessage,
 	type CustomMessage,
+	type EvalExecutionMessage,
 	type FileMentionMessage,
 	type HookMessage,
 	normalizeCustomMessagePayload,
-	type EvalExecutionMessage,
 	type PythonExecutionMessage,
 	sanitizeRehydratedOpenAIResponsesAssistantMessage,
 	stripInternalDetailsFields,

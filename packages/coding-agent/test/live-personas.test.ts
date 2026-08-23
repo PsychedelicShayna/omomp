@@ -79,7 +79,11 @@ describe("live personas", () => {
 		await fs.writeFile(statePath, JSON.stringify({ schemaVersion: 99 }), "utf8");
 		expect(await resolveLiveInstructions(statePath)).toBe(defaultLiveInstructions);
 		// Dangling selection: active names a persona that no longer exists.
-		await fs.writeFile(statePath, `${JSON.stringify({ schemaVersion: 1, personas: {}, active: "ghost" }, null, 2)}\n`, "utf8");
+		await fs.writeFile(
+			statePath,
+			`${JSON.stringify({ schemaVersion: 1, personas: {}, active: "ghost" }, null, 2)}\n`,
+			"utf8",
+		);
 		expect(await resolveLiveInstructions(statePath)).toBe(defaultLiveInstructions);
 		// The fallback text still carries the render variables the controller substitutes.
 		expect(defaultLiveInstructions).toContain("{{firstName}}");
