@@ -335,26 +335,19 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 	}
 
 	/**
-	 * Codex Code Mode advertisement, pulled from the session on every read so
-	 * the description can never drift from the active model or tool registry.
+	 * Codex Code Mode advertisement, pulled from the session's applied direct
+	 * partition on every read so the declarations can never advertise a tool the
+	 * model can already call directly (a plan-mode transport `write`), nor drift
+	 * from the active model or tool registry.
 	 */
 	#codeModeDescription(baseDescription: string): string | undefined {
 		const session = this.session;
-		if (!session) return undefined;
-		const model = session.getActiveModel?.();
-		const enabledToolNames = session.getEvalBridgeToolNames?.() ?? [...(session.toolRegistry?.keys() ?? [])];
-		const codeMode = resolveCodeMode({
-			provider: model?.provider ?? "",
-			toolMode: model?.toolMode,
-			setting: session.settings.get("providers.openai-codex.codeMode"),
-			extraDirectTools: session.settings.get("providers.openai-codex.codeModeDirectTools"),
-			enabledToolNames,
-			evalTransportAvailable: this.supportsCodeModeTransport(),
-		});
-		if (!codeMode.active) return undefined;
+		const directToolNames = session?.getCodeModeDirectToolNames?.();
+		if (!session || !directToolNames) return undefined;
+		const direct = new Set(directToolNames);
 		const declarations = generateCodeModeDeclarations(
-			enabledToolNames.flatMap(name => {
-				if (codeMode.directToolNames.has(name)) return [];
+			(session.getEvalBridgeToolNames?.() ?? [...(session.toolRegistry?.keys() ?? [])]).flatMap(name => {
+				if (direct.has(name)) return [];
 				const tool = session.toolRegistry?.get(name);
 				return tool ? [{ name, parameters: (tool as { parameters?: unknown }).parameters }] : [];
 			}),
