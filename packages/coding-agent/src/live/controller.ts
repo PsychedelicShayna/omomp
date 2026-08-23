@@ -7,12 +7,13 @@ import { AudioCapture } from "@oh-my-pi/pi-natives";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
 import type { AgentSessionEvent } from "../session/agent-session-events";
-import { LIVE_DELEGATION_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
+import { type CustomMessage, LIVE_DELEGATION_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
 import agentFinalMessageTemplate from "./prompts/agent-final-message.md" with { type: "text" };
 import liveInstructionsTemplate from "./prompts/live-instructions.md" with { type: "text" };
 import {
 	buildDelegationContextAppend,
 	buildSessionClose,
+	buildSessionContextAppend,
 	chunkLiveContext,
 	type LiveClientMessage,
 	type LiveServerEvent,
@@ -170,6 +171,10 @@ export class LiveSessionController {
 	 * would leave the genuine answer with nowhere to go.
 	 */
 	#expectedAbortedSettles = 0;
+	/** Chars of the current assistant message's thinking already narrated to the voice surface. */
+	#thinkingRelayedLength = 0;
+	/** Last reasoning-narration send, for rate-capping the speakable feed. */
+	#lastThinkingFlushAt = 0;
 	/** Serialized persistence tail for the live-transcript artifact (order + no double allocation). */
 	#transcriptLogChain: Promise<void> = Promise.resolve();
 	/** undefined = not yet allocated; null = permanently unavailable. */
@@ -412,6 +417,7 @@ export class LiveSessionController {
 		if (!merged) return;
 		this.#activeDelegationId = event.item.id;
 		this.#lastRelayedResponse = undefined;
+		this.#thinkingRelayedLength = 0;
 		try {
 			await this.#session.sendCustomMessage(
 				{
@@ -430,7 +436,16 @@ export class LiveSessionController {
 	}
 
 	#handleSessionEvent(event: AgentSessionEvent): void {
+		if (event.type === "irc_message") {
+			this.#relayCrewMessage(event.message);
+			return;
+		}
+		if (event.type === "message_update" && event.message.role === "assistant") {
+			this.#relayThinkingProgress(event.message);
+			return;
+		}
 		if (event.type === "message_end" && event.message.role === "assistant") {
+			this.#thinkingRelayedLength = 0;
 			if (event.message.stopReason === "toolUse") this.#appendProgress(event.message);
 			return;
 		}
@@ -487,6 +502,54 @@ export class LiveSessionController {
 			this.#lastRelayedResponse = undefined;
 		}
 		this.#refreshAudioPhase();
+	}
+
+	/** Fleet feed: relay a crew IRC message onto the speakable channel for background awareness. */
+	#relayCrewMessage(message: CustomMessage): void {
+		const details = message.details as { from?: string; message?: string } | undefined;
+		const from = details?.from?.trim() || "unknown crew";
+		let body = details?.message?.trim() ?? "";
+		if (!body) return;
+		// Headline-sized: the operator reads the full text in the TUI; the voice
+		// surface only needs enough to narrate the development.
+		if (body.length > 700) body = `${body.slice(0, 700)}…`;
+		this.#appendSpeakable(`Crew report from ${from}: ${body}`);
+	}
+
+	/**
+	 * Narrate the main agent's in-progress reasoning: boundary-cut, rate-capped,
+	 * explicitly labeled provisional so the voice surface can say "the main
+	 * agent is currently thinking about…" without presenting it as a result.
+	 */
+	#relayThinkingProgress(message: AssistantMessage): void {
+		let thinking = "";
+		for (const block of message.content) {
+			if ((block as { type?: string }).type !== "thinking") continue;
+			thinking += (block as { thinking?: string }).thinking ?? "";
+		}
+		if (thinking.length <= this.#thinkingRelayedLength) return;
+		const unsent = thinking.slice(this.#thinkingRelayedLength);
+		if (unsent.length < 280) return;
+		if (Date.now() - this.#lastThinkingFlushAt < 3000) return;
+		const boundary = Math.max(unsent.lastIndexOf(". "), unsent.lastIndexOf("\n"));
+		if (boundary < 120) return;
+		const cut = unsent.slice(0, boundary + 1).trim();
+		if (!cut) return;
+		this.#thinkingRelayedLength += boundary + 1;
+		this.#lastThinkingFlushAt = Date.now();
+		this.#appendSpeakable(`Main agent reasoning (live, provisional): ${cut}`);
+	}
+
+	/** Append text on the speakable channel — delegation-scoped when one is active. */
+	#appendSpeakable(text: string): void {
+		const delegationId = this.#activeDelegationId;
+		for (const chunk of chunkLiveContext(text)) {
+			this.#queueSend(
+				delegationId
+					? buildDelegationContextAppend(delegationId, chunk, "speakable")
+					: buildSessionContextAppend(chunk, "speakable"),
+			);
+		}
 	}
 
 	#handleOutputLevel(level: number): void {

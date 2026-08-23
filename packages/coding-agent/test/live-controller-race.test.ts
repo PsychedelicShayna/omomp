@@ -14,6 +14,10 @@
  *    delegation id can never route later unrelated output into the call.
  * 4. Raw transcript persistence: pre-dedupe, ordered, duplicates survive,
  *    mid-utterance partial flushed on stop, drained before teardown.
+ * 5. Fleet feed: crew IRC messages ride the speakable channel, attributed and
+ *    session-scoped when no delegation is active.
+ * 6. Fleet feed: reasoning narration flushes once at a sentence boundary and
+ *    never re-sends already-narrated thinking.
  */
 import { mkdtempSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -168,6 +172,16 @@ function finalAppends(sent: LiveClientMessage[]): Array<{ delegation_item_id: st
 	return appends;
 }
 
+function speakableTexts(sent: LiveClientMessage[]): string[] {
+	const texts: string[] = [];
+	for (const message of sent) {
+		if (message.type !== "session.context.append" && message.type !== "delegation.context.append") continue;
+		if (message.channel !== "speakable") continue;
+		texts.push(message.content.map(item => item.text).join(""));
+	}
+	return texts;
+}
+
 describe("live controller delegation ownership", () => {
 	it("suppresses the torn-down turn's late aborted settle instead of closing the new delegation", async () => {
 		const h = makeHarness();
@@ -254,5 +268,47 @@ describe("live controller delegation ownership", () => {
 			["user", false, "unfinished thou"],
 			["user", false, "unfinished thou"], // stop-time flush of the mid-utterance partial
 		]);
+	});
+
+	it("relays crew IRC messages onto the speakable channel, attributed and session-scoped", async () => {
+		const h = makeHarness();
+		await h.controller.start();
+		h.fireSession({
+			type: "irc_message",
+			message: {
+				role: "custom",
+				customType: "irc:incoming",
+				content: "templated wrapper noise",
+				display: true,
+				details: { id: "m1", from: "Helios", message: "build is green" },
+				attribution: "agent",
+				timestamp: 1,
+			},
+		} as unknown as AgentSessionEvent);
+		await settle();
+		const texts = speakableTexts(h.sent);
+		expect(texts).toEqual(["Crew report from Helios: build is green"]);
+		// No active delegation: must ride the session-level append, not a stale delegation id.
+		expect(h.sent.some(m => m.type === "session.context.append" && m.channel === "speakable")).toBe(true);
+	});
+
+	it("narrates in-progress reasoning once per sentence boundary without re-sending", async () => {
+		const h = makeHarness();
+		await h.controller.start();
+		const thinking = "The main agent weighs option one carefully against two. ".repeat(6).trim();
+		const update = {
+			type: "message_update",
+			message: { role: "assistant", content: [{ type: "thinking", thinking }] },
+		} as unknown as AgentSessionEvent;
+		h.fireSession(update);
+		await settle();
+		const first = speakableTexts(h.sent);
+		expect(first).toHaveLength(1);
+		expect(first[0]).toStartWith("Main agent reasoning (live, provisional): The main agent weighs");
+
+		// Same accumulated thinking again: remainder below threshold, nothing re-sent.
+		h.fireSession(update);
+		await settle();
+		expect(speakableTexts(h.sent)).toHaveLength(1);
 	});
 });
