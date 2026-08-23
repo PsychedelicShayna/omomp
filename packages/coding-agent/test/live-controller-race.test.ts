@@ -303,7 +303,7 @@ describe("live controller delegation ownership", () => {
 				customType: "irc:incoming",
 				content: "",
 				display: true,
-				details: { id: "m2", from: "Atlas", message: "status ".repeat(200).trim() },
+				details: { id: "m2", from: "Atlas", message: "🚀 status ".repeat(120).trim() },
 				attribution: "agent",
 				timestamp: 2,
 			},
@@ -313,9 +313,11 @@ describe("live controller delegation ownership", () => {
 		// One append per item: a second unlabeled fragment would be spoken mid-assembly.
 		expect(texts).toHaveLength(1);
 		const only = texts[0] ?? "";
-		expect(only).toStartWith("Crew report from Atlas: status");
+		expect(only).toStartWith("Crew report from Atlas: 🚀 status");
 		expect(only).toEndWith("…");
 		expect(Buffer.byteLength(only, "utf8")).toBeLessThanOrEqual(500);
+		// Code-point-safe truncation: a lone surrogate here would corrupt the wire payload.
+		expect(only.isWellFormed()).toBe(true);
 	});
 
 	it("narrates in-progress reasoning once per sentence boundary without re-sending", async () => {

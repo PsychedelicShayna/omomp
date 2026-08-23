@@ -548,10 +548,17 @@ export class LiveSessionController {
 	 * so overflow is truncated at the byte cap, never split.
 	 */
 	#appendSpeakable(text: string): void {
-		let item = text;
-		if (Buffer.byteLength(item, "utf8") > CONTEXT_CHUNK_BYTES) {
-			while (Buffer.byteLength(item, "utf8") > CONTEXT_CHUNK_BYTES - 3) item = item.slice(0, -8);
-			item = `${item.trimEnd()}…`;
+		const chunks = chunkLiveContext(text);
+		let item = chunks[0] ?? "";
+		if (!item) return;
+		if (chunks.length > 1) {
+			// Reserve room for the ellipsis without splitting a surrogate pair:
+			// chunkLiveContext is the code-point-safe truncation primitive.
+			let units = [...item];
+			while (units.length > 0 && Buffer.byteLength(units.join(""), "utf8") > CONTEXT_CHUNK_BYTES - 3) {
+				units = units.slice(0, -4);
+			}
+			item = `${units.join("").trimEnd()}…`;
 		}
 		const delegationId = this.#activeDelegationId;
 		this.#queueSend(
