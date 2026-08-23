@@ -9,9 +9,10 @@ import type { AgentSession } from "../session/agent-session";
 import type { AgentSessionEvent } from "../session/agent-session-events";
 import { type CustomMessage, LIVE_DELEGATION_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
 import agentFinalMessageTemplate from "./prompts/agent-final-message.md" with { type: "text" };
-import liveInstructionsTemplate from "./prompts/live-instructions.md" with { type: "text" };
+import { resolveLiveInstructions } from "./personas";
 import {
 	buildDelegationContextAppend,
+	CONTEXT_CHUNK_BYTES,
 	buildSessionClose,
 	buildSessionContextAppend,
 	chunkLiveContext,
@@ -224,7 +225,7 @@ export class LiveSessionController {
 
 		try {
 			const user = currentUser();
-			const instructions = prompt.render(liveInstructionsTemplate, user);
+			const instructions = prompt.render(await resolveLiveInstructions(), user);
 			const transport = this.#createTransport({
 				authStorage: this.#session.modelRegistry.authStorage,
 				sessionId: this.#session.sessionId,
@@ -508,11 +509,10 @@ export class LiveSessionController {
 	#relayCrewMessage(message: CustomMessage): void {
 		const details = message.details as { from?: string; message?: string } | undefined;
 		const from = details?.from?.trim() || "unknown crew";
-		let body = details?.message?.trim() ?? "";
+		const body = details?.message?.trim() ?? "";
 		if (!body) return;
 		// Headline-sized: the operator reads the full text in the TUI; the voice
 		// surface only needs enough to narrate the development.
-		if (body.length > 700) body = `${body.slice(0, 700)}…`;
 		this.#appendSpeakable(`Crew report from ${from}: ${body}`);
 	}
 
@@ -540,16 +540,25 @@ export class LiveSessionController {
 		this.#appendSpeakable(`Main agent reasoning (live, provisional): ${cut}`);
 	}
 
-	/** Append text on the speakable channel — delegation-scoped when one is active. */
+	/**
+	 * Append one labeled item on the speakable channel — delegation-scoped when
+	 * one is active. A speakable item MUST fit a single wire chunk: independent
+	 * chunks would reach the voice model as unlabeled fragments and be spoken
+	 * mid-assembly (the exact failure that killed voicing final-answer chunks),
+	 * so overflow is truncated at the byte cap, never split.
+	 */
 	#appendSpeakable(text: string): void {
-		const delegationId = this.#activeDelegationId;
-		for (const chunk of chunkLiveContext(text)) {
-			this.#queueSend(
-				delegationId
-					? buildDelegationContextAppend(delegationId, chunk, "speakable")
-					: buildSessionContextAppend(chunk, "speakable"),
-			);
+		let item = text;
+		if (Buffer.byteLength(item, "utf8") > CONTEXT_CHUNK_BYTES) {
+			while (Buffer.byteLength(item, "utf8") > CONTEXT_CHUNK_BYTES - 3) item = item.slice(0, -8);
+			item = `${item.trimEnd()}…`;
 		}
+		const delegationId = this.#activeDelegationId;
+		this.#queueSend(
+			delegationId
+				? buildDelegationContextAppend(delegationId, item, "speakable")
+				: buildSessionContextAppend(item, "speakable"),
+		);
 	}
 
 	#handleOutputLevel(level: number): void {

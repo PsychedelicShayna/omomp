@@ -15,7 +15,8 @@
  * 4. Raw transcript persistence: pre-dedupe, ordered, duplicates survive,
  *    mid-utterance partial flushed on stop, drained before teardown.
  * 5. Fleet feed: crew IRC messages ride the speakable channel, attributed and
- *    session-scoped when no delegation is active.
+ *    session-scoped when no delegation is active; oversized reports truncate
+ *    to ONE labeled chunk — never split into unlabeled fragments.
  * 6. Fleet feed: reasoning narration flushes once at a sentence boundary and
  *    never re-sends already-narrated thinking.
  */
@@ -290,6 +291,31 @@ describe("live controller delegation ownership", () => {
 		expect(texts).toEqual(["Crew report from Helios: build is green"]);
 		// No active delegation: must ride the session-level append, not a stale delegation id.
 		expect(h.sent.some(m => m.type === "session.context.append" && m.channel === "speakable")).toBe(true);
+	});
+
+	it("truncates an oversized crew report to a single labeled chunk instead of splitting", async () => {
+		const h = makeHarness();
+		await h.controller.start();
+		h.fireSession({
+			type: "irc_message",
+			message: {
+				role: "custom",
+				customType: "irc:incoming",
+				content: "",
+				display: true,
+				details: { id: "m2", from: "Atlas", message: "status ".repeat(200).trim() },
+				attribution: "agent",
+				timestamp: 2,
+			},
+		} as unknown as AgentSessionEvent);
+		await settle();
+		const texts = speakableTexts(h.sent);
+		// One append per item: a second unlabeled fragment would be spoken mid-assembly.
+		expect(texts).toHaveLength(1);
+		const only = texts[0] ?? "";
+		expect(only).toStartWith("Crew report from Atlas: status");
+		expect(only).toEndWith("…");
+		expect(Buffer.byteLength(only, "utf8")).toBeLessThanOrEqual(500);
 	});
 
 	it("narrates in-progress reasoning once per sentence boundary without re-sending", async () => {
