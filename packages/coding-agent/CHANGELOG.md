@@ -5,6 +5,7 @@
 ### Added
 
 - Added the `/pin` slash command to pin and unpin sessions so they stay at the top of the `--resume` picker UI.
+- Added live personas: named instruction sets for the live voice model with an immutable bundled `default`, clone-based creation, and a `resolveLiveInstructions()` seam that falls back to the bundled template when the store is missing or corrupt (`src/live/personas.ts`, managed via the `omomp-live-persona` extension's `/live-persona` command).
 ### Changed
 
 - Slash-command autocomplete now collapses skills into a single `/skill:` row; the individual skills list once the prefix reaches `/skill:` (accepting the row with Tab/Enter expands it in place).
