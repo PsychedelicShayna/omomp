@@ -25,6 +25,14 @@ describe("live personas", () => {
 		await fs.rm(dir, { recursive: true, force: true });
 	});
 
+	test("bundled default keeps user relays silent and speaks delegated updates", () => {
+		expect(defaultLiveInstructions).toContain("Silently relay the utterance");
+		expect(defaultLiveInstructions).toContain("NEVER echo, summarize, confirm, or announce the relay aloud");
+		expect(defaultLiveInstructions).toContain("MUST speak a concise, natural summary");
+		expect(defaultLiveInstructions).toContain("MUST promptly tell {{firstName}}");
+		expect(defaultLiveInstructions).toContain("MUST promptly narrate each supplied update");
+	});
+
 	test("default is immutable: edit, delete, and clone-over are rejected loudly", async () => {
 		await expect(personas.edit("default", "hijacked")).rejects.toThrow(/immutable/);
 		await expect(personas.delete("default")).rejects.toThrow(/immutable/);
