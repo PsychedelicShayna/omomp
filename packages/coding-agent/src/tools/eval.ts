@@ -1,7 +1,7 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, ToolExample } from "@oh-my-pi/pi-ai";
-import { prompt } from "@oh-my-pi/pi-utils";
+import { prompt, withTimeout } from "@oh-my-pi/pi-utils";
 import {
 	DEFAULT_AUTO_BACKGROUND_THRESHOLD_MS,
 	formatBackgroundNotice,
@@ -12,7 +12,7 @@ import { jsBackend, juliaBackend, pythonBackend, rubyBackend } from "../eval";
 import type { ExecutorBackend, ExecutorBackendResult } from "../eval/backend";
 import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP } from "../eval/bridge-timeout";
 import { IdleTimeout } from "../eval/idle-timeout";
-import type { BackendProbeOptions } from "../eval/probe";
+import { type BackendProbeOptions, DEFAULT_PROBE_TIMEOUT_MS } from "../eval/probe";
 import { defaultEvalSessionId } from "../eval/session-id";
 import type { EvalCellResult, EvalDisplayOutput, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
 import evalDescription from "../prompts/tools/eval.md" with { type: "text" };
@@ -238,7 +238,26 @@ async function resolveBackend(
 ): Promise<ResolvedBackend> {
 	const extensionBackend = registryForToolSession(session)?.resolve(language);
 	if (extensionBackend) {
-		if (!(await extensionBackend.isAvailable())) {
+		const timeoutMs = Math.min(
+			probeOpts?.timeoutMs && probeOpts.timeoutMs > 0 ? probeOpts.timeoutMs : DEFAULT_PROBE_TIMEOUT_MS,
+			DEFAULT_PROBE_TIMEOUT_MS,
+		);
+		const timeoutMessage = `Eval backend "${extensionBackend.id}" availability probe timed out after ${timeoutMs}ms.`;
+		let available: boolean;
+		try {
+			available = await withTimeout(
+				Promise.resolve(extensionBackend.isAvailable()),
+				timeoutMs,
+				timeoutMessage,
+				probeOpts?.signal,
+			);
+		} catch (error) {
+			throwIfAborted(probeOpts?.signal);
+			if (error instanceof Error && error.message === timeoutMessage) throw new ToolError(timeoutMessage);
+			throw error;
+		}
+		throwIfAborted(probeOpts?.signal);
+		if (!available) {
 			throw new ToolError(`Eval backend "${extensionBackend.id}" is unavailable in this session.`);
 		}
 		return { backend: extensionBackendAdapter(extensionBackend) };
