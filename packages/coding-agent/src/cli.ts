@@ -28,6 +28,7 @@ import { interceptUnhandledRejections } from "@oh-my-pi/pi-utils/postmortem";
 import { setProcessName } from "@oh-my-pi/pi-utils/process-name";
 import { declareWorkerHostEntry, installWorkerInbox, isWorkerHostSelector } from "@oh-my-pi/pi-utils/worker-host";
 import { BLOB_BROKER_WORKER_ARG } from "./blob-broker/protocol";
+import { resolveOmompUpdateArgv } from "./cli/omomp-update";
 import { installProfileAlias, resolveProfileAliasCommandFromProcess } from "./cli/profile-alias";
 import { extractProfileFlags } from "./cli/profile-bootstrap";
 import { startJsEvalProcess } from "./eval/js/process-entry";
@@ -447,7 +448,7 @@ export async function runCli(argv: string[]): Promise<void> {
 		]);
 		// --help and --version are handled by run() directly; --license returned above.
 		// Everything else that isn't a known subcommand routes to "launch".
-		const resolved = resolveCliArgv(resolvedArgv);
+		const resolved = resolveCliArgv(resolveOmompUpdateArgv(resolvedArgv, process.execPath));
 		if ("error" in resolved) {
 			process.stderr.write(`error: ${resolved.error}\n`);
 			process.exitCode = 1;

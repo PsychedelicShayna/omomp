@@ -32,6 +32,27 @@ This repo contains multiple packages, but **`packages/coding-agent/`** is the pr
   run it. An automatic post-build deploy failure warns and leaves the
   binary in place; the explicit installer and `bun setup` still fail.
 
+## Fork self-update
+
+- Running the installed binary as exactly `omomp update` is fork-specific: it
+  launches a normal interactive agent session with
+  `packages/coding-agent/src/prompts/omomp-update.md` as the initial user
+  request. The agent updates this checkout, resolves conflicts, validates,
+  builds, installs only `omomp`, deploys extensions, and commits the result.
+- The rewrite is intentionally gated by the executable basename and exact
+  argument list. `omp update` remains the upstream updater, while
+  `omomp update --check`, `omomp update --help`, and other update arguments keep
+  the upstream command behavior rather than silently becoming prompts.
+- A manual fork update follows the same contract: preserve and commit relevant
+  dirty work, create a recovery ref, fetch `upstream` and its tags, merge the
+  latest release state into `omomp`, resolve conflicts without dropping fork
+  behavior, run focused tests and required checks, then build with
+  `bun --cwd=packages/coding-agent run build`.
+- Install `packages/coding-agent/dist/omp` at the existing `omomp` path only,
+  then run `bun scripts/install-omomp-extensions.ts` and smoke-test the
+  installed executable. Never use `bun setup`, `scripts/link-omp.sh`, or the
+  upstream update installer for this flow because they can target `omp`.
+
 
 
 ### Package Structure

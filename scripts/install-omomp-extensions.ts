@@ -10,6 +10,7 @@
  * dest that are not in the source tree are left untouched. A same-named
  * dest directory is renamed aside, never deleted.
  */
+import type { Dirent } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getAgentDir } from "@oh-my-pi/pi-utils/dirs";
@@ -68,7 +69,7 @@ export function defaultOmompExtensionsDestDir(agentDir?: string): string {
 
 /** Directory names under `sourceDir` that should be deployed. Hidden names and files are ignored. */
 export async function listOmompExtensionNames(sourceDir: string): Promise<string[]> {
-	let entries: Awaited<ReturnType<typeof fs.readdir>>;
+	let entries: Dirent<string>[];
 	try {
 		entries = await fs.readdir(sourceDir, { withFileTypes: true });
 	} catch (error) {
