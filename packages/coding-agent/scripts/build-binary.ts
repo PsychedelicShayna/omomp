@@ -2,13 +2,13 @@
 
 import { createRequire } from "node:module";
 import * as path from "node:path";
-import { compileCodingAgent } from "./compile-binary";
 import {
 	defaultOmompExtensionsDestDir,
 	defaultOmompExtensionsSourceDir,
 	formatOmompExtensionsResult,
 	installOmompExtensions,
 } from "../../../scripts/install-omomp-extensions";
+import { compileCodingAgent } from "./compile-binary";
 
 const packageDir = path.join(import.meta.dir, "..");
 const repoRoot = path.join(packageDir, "..", "..");
