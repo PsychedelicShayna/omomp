@@ -58,6 +58,7 @@ function createContext() {
 			isCompacting: false,
 			isBashRunning: false,
 			isEvalRunning: false,
+			isEvalLanguageRunning: () => false,
 			extensionRunner: undefined,
 			maybeStartTitleGeneration: vi.fn(),
 			prompt,
