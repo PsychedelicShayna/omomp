@@ -25,7 +25,11 @@ async function tempDir(prefix: string): Promise<string> {
 	return dir;
 }
 
-async function writeExtension(root: string, name: string, body = `export default function ${name.replaceAll("-", "_")}() {}\n`): Promise<string> {
+async function writeExtension(
+	root: string,
+	name: string,
+	body = `export default function ${name.replaceAll("-", "_")}() {}\n`,
+): Promise<string> {
 	const dir = path.join(root, name);
 	await Bun.write(path.join(dir, "index.ts"), body);
 	return dir;
@@ -40,11 +44,7 @@ describe("listOmompExtensionNames", () => {
 		await Bun.write(path.join(source, "README.md"), "not an extension\n");
 		await writeExtension(source, ".hidden");
 
-		expect(await listOmompExtensionNames(source)).toEqual([
-			"omomp-live-persona",
-			"omomp-loadout",
-			"omomp-persona",
-		]);
+		expect(await listOmompExtensionNames(source)).toEqual(["omomp-live-persona", "omomp-loadout", "omomp-persona"]);
 	});
 
 	test("fails loudly when the source tree is missing", async () => {
@@ -88,7 +88,11 @@ describe("installOmompExtensions", () => {
 	test("replaces a managed directory copy with a symlink so repo-relative imports keep working", async () => {
 		const source = await tempDir("omomp-ext-src-");
 		const dest = await tempDir("omomp-ext-dest-");
-		await writeExtension(source, "omomp-live-persona", 'export { x } from "../../packages/coding-agent/src/live/personas.ts";\n');
+		await writeExtension(
+			source,
+			"omomp-live-persona",
+			'export { x } from "../../packages/coding-agent/src/live/personas.ts";\n',
+		);
 		await Bun.write(path.join(dest, "omomp-live-persona", "index.ts"), "stale copy\n");
 
 		const result = await installOmompExtensions({ sourceDir: source, destDir: dest });
@@ -109,7 +113,9 @@ describe("installOmompExtensions", () => {
 
 		const result = await installOmompExtensions({ sourceDir: source, destDir: dest });
 		expect(result.refreshed).toEqual(["omomp-persona"]);
-		expect(await fs.realpath(path.join(dest, "omomp-persona"))).toBe(await fs.realpath(path.join(source, "omomp-persona")));
+		expect(await fs.realpath(path.join(dest, "omomp-persona"))).toBe(
+			await fs.realpath(path.join(source, "omomp-persona")),
+		);
 	});
 
 	test("renames a divergent dest directory aside instead of deleting it", async () => {
@@ -149,9 +155,7 @@ describe("installOmompExtensions", () => {
 		expect((await fs.lstat(destExt)).isDirectory()).toBe(true);
 		expect((await fs.lstat(destExt)).isSymbolicLink()).toBe(false);
 		expect(await Bun.file(path.join(destExt, "keep-me.ts")).text()).toBe("user edits\n");
-		const leftovers = (await fs.readdir(dest)).filter(
-			name => name.includes(".tmp") || name.includes("pre-symlink"),
-		);
+		const leftovers = (await fs.readdir(dest)).filter(name => name.includes(".tmp") || name.includes("pre-symlink"));
 		expect(leftovers).toEqual([]);
 	});
 });
