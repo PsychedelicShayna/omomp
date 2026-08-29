@@ -1,4 +1,4 @@
-import { APP_NAME, getActiveProfile } from "@oh-my-pi/pi-utils";
+import { getActiveProfile } from "@oh-my-pi/pi-utils";
 
 /**
  * Build the shell command that resumes a session by id.
@@ -14,5 +14,5 @@ import { APP_NAME, getActiveProfile } from "@oh-my-pi/pi-utils";
 export function resumeCommand(sessionId: string): string {
 	const profile = getActiveProfile();
 	const profileFlag = profile ? `--profile ${profile} ` : "";
-	return `${APP_NAME} ${profileFlag}--resume ${sessionId}`;
+	return `omomp ${profileFlag}--resume ${sessionId}`;
 }
