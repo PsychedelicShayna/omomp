@@ -22,6 +22,8 @@
   Fork of <a href="https://github.com/badlogic/pi-mono">Pi</a> by <a href="https://github.com/mariozechner">@mariozechner</a> 
 </p>
 
+> This checkout is [PsychedelicShayna/omomp](https://github.com/PsychedelicShayna/omomp), a fork of [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi). Install and run it as the separate binary `omomp`. Never replace a live `omp`. Completed fork differences: [docs/omomp-fork.md](docs/omomp-fork.md).
+
 The most capable agent surface that ships. Continuously tuned by real-world use — complete out of the box, open all the way down.
 
 **60+** providers · **31** built-in tools · **14** lsp ops · **28** dap ops · **~80k** lines of Rust core.
