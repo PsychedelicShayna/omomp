@@ -2823,6 +2823,9 @@ const OPENCODE_GO_API_ID_OVERRIDES: Readonly<Record<string, Api>> = {
 	"qwen3.5-plus": "openai-completions",
 	"qwen3.6-plus": "openai-completions",
 };
+// Runtime-discovered rows cached before model-identity corrections retain
+// stale capability metadata until the authoritative catalog TTL expires.
+const OPENCODE_CACHE_MIGRATION_MODEL_IDS = ["glm-5.3-flash"] as const;
 
 // Billing-variant suffixes the OpenCode gateways append to a base model id
 // without changing its transport (`deepseek-v4-flash-free`,
@@ -2883,12 +2886,10 @@ function openCodeModelManagerOptions(
 		providerId,
 		cacheProviderId: resolveModelCacheProviderId(providerId, { apiKey, baseUrl: discoveryBaseUrl }),
 		dynamicModelsAuthoritative: true,
-		// The per-id API pins are cache identity: without this, rows cached
-		// before a pin was added keep the wrong endpoint until TTL expiry
-		// (#8957 — 17.3.7 caches held muse-spark-1.2[-contributor] on chat
-		// completions after the pin shipped). Sibling-catalog drift is bounded
-		// by the 2h cache TTL instead.
-		dropCachedModelIdsOnStaticMismatch: Object.keys(apiOverrides),
+		// Per-id route pins and capability migrations are cache identity:
+		// without this, rows cached before a correction keep the stale route or
+		// thinking surface until TTL expiry (#8957, #9960).
+		dropCachedModelIdsOnStaticMismatch: [...Object.keys(apiOverrides), ...OPENCODE_CACHE_MIGRATION_MODEL_IDS],
 		modelsDev: {
 			fetch: () => fetchRevalidatedWellKnownModelsWithTimeout(config?.fetch),
 			map: payload => {
@@ -5397,12 +5398,29 @@ function mapLiteLLMRichEntry<TApi extends Api>(
 							["tools", "tool_choice", "functions", "function_call"].includes(param),
 						)
 					: reference?.supportsTools;
+	// Enrich from the bundled reference with provider-INDEPENDENT reasoning
+	// hints only. The reference is resolved against the global bundled catalog,
+	// so a custom endpoint exposing an alias that collides with a bundled model
+	// (a LiteLLM proxy serving `kimi-k3`, which matches Fireworks' bundled
+	// `kimi-k3`) must not inherit that provider's transport compat. Spreading
+	// the resolved `reference.compat` wholesale leaked `wireModelIdMode`,
+	// `toolSchemaFlavor`, `thinkingFormat`, etc. across the provider boundary —
+	// rewriting the wire id to `accounts/fireworks/models/kimi-k3` for a
+	// non-Fireworks endpoint (issue #9938). `buildModel` re-derives every
+	// transport field from the discovered provider and model id, so only the
+	// effort vocabulary flows through here. Mirrors `discoverOpenAIModelsList`.
+	const referenceCompat = reference?.compat as OpenAICompat | undefined;
 	const compat: OpenAICompat = {
-		...(reference?.compat ?? {}),
 		supportsStore: false,
 		supportsDeveloperRole: false,
 		...(supportedOpenAIParams !== undefined
 			? { supportsReasoningEffort: supportedOpenAIParams.includes("reasoning_effort") }
+			: referenceCompat?.supportsReasoningEffort !== undefined
+				? { supportsReasoningEffort: referenceCompat.supportsReasoningEffort }
+				: {}),
+		...(referenceCompat?.reasoningEffortMap ? { reasoningEffortMap: referenceCompat.reasoningEffortMap } : {}),
+		...(referenceCompat?.omitReasoningEffort !== undefined
+			? { omitReasoningEffort: referenceCompat.omitReasoningEffort }
 			: {}),
 	};
 	return {
@@ -5628,12 +5646,14 @@ export function litellmModelManagerOptions(config?: LiteLLMModelManagerConfig): 
 	const baseUrl = config?.baseUrl ?? getDefaultModelDiscoveryBaseUrl("litellm")!;
 	return {
 		providerId: "litellm",
-		// rich-v7 invalidates rows cached before discovery continued past endpoints
-		// that omitted cache pricing. Earlier versions added bundled reference fallback,
-		// moved OpenAI models to Responses, continued past incomplete vision and API
-		// metadata, stripped reseller usage suffixes, filtered placeholder rows, and
-		// mapped rich pricing. Bump the version whenever these mappers change, or warm
-		// authoritative caches keep serving pre-change rows for the full TTL.
+		// rich-v8 invalidates rows whose `compatConfig` retained a colliding
+		// bundled model's provider-specific transport (e.g. Fireworks
+		// `wireModelIdMode`) before that leak was fixed. Earlier versions added
+		// bundled reference fallback, moved OpenAI models to Responses, continued
+		// past incomplete vision/API metadata and endpoints omitting cache
+		// pricing, stripped reseller usage suffixes, filtered placeholder rows,
+		// and mapped rich pricing. Bump the version whenever these mappers change,
+		// or warm authoritative caches keep serving pre-change rows for the full TTL.
 		cacheProviderId: resolveModelCacheProviderId("litellm", { baseUrl }),
 		// litellm is a local-only proxy and is never bundled in models.json (that
 		// would leak the machine's localhost catalog). Prefer the proxy's richer

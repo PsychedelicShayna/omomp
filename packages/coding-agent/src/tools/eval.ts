@@ -939,6 +939,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 					return toolResult(details)
 						.content([{ type: "text", text: outputText }, ...images])
 						.truncationFromSummary(summaryForMeta, { direction: "tail" })
+						.error()
 						.done();
 				}
 
@@ -964,6 +965,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 					return toolResult(details)
 						.content([{ type: "text", text: outputText }, ...images])
 						.truncationFromSummary(summaryForMeta, { direction: "tail" })
+						.error()
 						.done();
 				}
 
