@@ -852,6 +852,99 @@ describe("AgentSession retry fallback", () => {
 		expect(requestedModels).toEqual([]);
 	});
 
+	it("fully unwinds a cancelled receipt preflight before starting the next receipt", async () => {
+		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
+		if (!primaryModel || !fallbackModel) throw new Error("Expected bundled receipt preflight models");
+		const requestedModels: string[] = [];
+		const mock = createMockModel({ responses: [{ content: ["B completed"] }] });
+		const agent = new Agent({
+			getApiKey: model => `${model.provider}-test-key`,
+			initialState: { model: primaryModel, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: (model, context, options) => {
+				requestedModels.push(`${model.provider}/${model.id}`);
+				return mock.stream(model, context, options);
+			},
+		});
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.usageAwareFallback": true,
+			"retry.fallbackChains": {
+				default: [`${fallbackModel.provider}/${fallbackModel.id}`],
+			},
+		});
+		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+		vi.spyOn(modelRegistry.authStorage, "getModelUsageHealth").mockImplementation(async provider =>
+			provider === primaryModel.provider
+				? {
+						state: "reserve",
+						accounts: [
+							{
+								credentialId: 1,
+								credentialType: "oauth",
+								state: "reserve",
+								remainingFraction: 0.05,
+							},
+						],
+					}
+				: { state: "healthy", accounts: [] },
+		);
+		const firstConfirmationStarted = Promise.withResolvers<void>();
+		const firstConfirmationAborted = Promise.withResolvers<void>();
+		const unwindFirstConfirmation = Promise.withResolvers<void>();
+		let confirmationCalls = 0;
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+		session.setUsageFallbackConfirmer(async (_confirmation, signal) => {
+			confirmationCalls += 1;
+			if (confirmationCalls > 1) return true;
+			firstConfirmationStarted.resolve();
+			await new Promise<void>((resolve, reject) => {
+				signal.addEventListener(
+					"abort",
+					() => {
+						firstConfirmationAborted.resolve();
+						void unwindFirstConfirmation.promise.then(() =>
+							reject(signal.reason ?? new DOMException("Aborted", "AbortError")),
+						);
+					},
+					{ once: true },
+				);
+			});
+			return false;
+		});
+
+		const deliveryA = session.sendCustomMessageWithReceipt(
+			{ customType: "test:receipt", content: "A", display: true, attribution: "agent" },
+			{ triggerTurn: true },
+		);
+		void deliveryA.accepted.catch(() => {});
+		void deliveryA.completed.catch(() => {});
+		await firstConfirmationStarted.promise;
+		expect(deliveryA.cancel()).toBe(true);
+		await firstConfirmationAborted.promise;
+
+		const deliveryB = session.sendCustomMessageWithReceipt(
+			{ customType: "test:receipt", content: "B", display: true, attribution: "agent" },
+			{ triggerTurn: true },
+		);
+		await scheduler.yield();
+		expect(confirmationCalls).toBe(1);
+		expect(requestedModels).toEqual([]);
+
+		unwindFirstConfirmation.resolve();
+		await expect(deliveryA.accepted).rejects.toThrow();
+		expect(await deliveryA.completed.catch(() => false)).toBe(false);
+		await deliveryB.accepted;
+		expect(await deliveryB.completed).toBe(true);
+		expect(confirmationCalls).toBe(2);
+		expect(requestedModels).toEqual([`${fallbackModel.provider}/${fallbackModel.id}`]);
+	});
+
 	it("defers usage fallback for a queued steer until the active stream finishes", async () => {
 		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
 		const fallbackModel = getBundledModel("openai", "gpt-4o-mini");

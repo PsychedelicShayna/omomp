@@ -6,6 +6,7 @@ import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { AudioCapture } from "@oh-my-pi/pi-natives";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
+import type { CustomMessageDelivery } from "../session/agent-session";
 import type { AgentSessionEvent } from "../session/agent-session-events";
 import { type CustomMessage, LIVE_DELEGATION_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
 import { resolveLiveInstructions } from "./personas";
@@ -26,6 +27,7 @@ import { DEFAULT_LIVE_VOICE } from "./voices";
 const OUTPUT_ACTIVE_LEVEL = 0.015;
 const MIN_BARGE_IN_LEVEL = 0.04;
 const OUTPUT_ECHO_RATIO = 0.65;
+const DEFAULT_SPEAKABLE_IDLE_MS = 3000;
 
 /** Incremental or final transcript for one realtime conversational turn. */
 export interface LiveTranscript {
@@ -66,6 +68,8 @@ export interface LiveSessionControllerOptions {
 	extractAssistantText(message: AssistantMessage): string;
 	/** Realtime output voice, defaulting to sol. */
 	voice?: string;
+	/** Test seam: quiet time after user activity before queued speakables send; defaults to 3000 ms. */
+	speakableIdleMs?: number;
 	/** Test seam: builds the realtime transport; defaults to CodexLiveTransport. */
 	createTransport?(options: ConstructorParameters<typeof CodexLiveTransport>[0]): LiveTransportLike;
 	/** Test seam: builds the microphone recorder; defaults to the native AudioCapture. */
@@ -135,6 +139,7 @@ export class LiveSessionController {
 	readonly #callbacks: LiveSessionCallbacks;
 	readonly #extractAssistantText: (message: AssistantMessage) => string;
 	readonly #voice: string;
+	readonly #speakableIdleMs: number;
 
 	readonly #createTransport: (options: ConstructorParameters<typeof CodexLiveTransport>[0]) => LiveTransportLike;
 	readonly #createRecorder: (
@@ -163,8 +168,14 @@ export class LiveSessionController {
 	#lastRelayedResponse: AgentMessage | undefined;
 	/** Monotonic voice-handoff generation; the newest survivor owns dispatch. */
 	#delegationGeneration = 0;
-	/** Requests not yet delivered to the backend; merged in arrival order by the newest survivor. */
-	#pendingDelegationRequests: string[] = [];
+	/** Canonical controller-owned user turns awaiting or undergoing a handoff. */
+	#userTurnLedger: Array<{ turn: number; text: string; final: boolean; claim?: number }> = [];
+	#userLedgerTurn = 0;
+	readonly #seenDelegationIds = new Set<string>();
+	#pendingDelegation:
+		| { id: string; generation: number; turns: number[]; dispatchEnabled: boolean; dispatching: boolean }
+		| undefined;
+	#pendingDelivery: CustomMessageDelivery | undefined;
 	/** Coalesced in-flight live abort, so rapid handoffs never overlap AgentSession.abort(). */
 	#liveAbortPromise: Promise<void> | undefined;
 	/**
@@ -179,6 +190,10 @@ export class LiveSessionController {
 	#thinkingRelayedLength = 0;
 	/** Last reasoning-narration send, for rate-capping the speakable feed. */
 	#lastThinkingFlushAt = 0;
+	/** Speakable updates held until the user has been quiet, in arrival order. */
+	#pendingSpeakables: string[] = [];
+	#speakableIdleDeadline = 0;
+	#speakableIdleTimer: NodeJS.Timeout | undefined;
 	/** Serialized persistence tail for the live-transcript artifact (order + no double allocation). */
 	#transcriptLogChain: Promise<void> = Promise.resolve();
 	/** undefined = not yet allocated; null = permanently unavailable. */
@@ -196,6 +211,11 @@ export class LiveSessionController {
 		this.#callbacks = options.callbacks;
 		this.#extractAssistantText = options.extractAssistantText;
 		this.#voice = options.voice?.trim() || DEFAULT_LIVE_VOICE;
+		const speakableIdleMs = options.speakableIdleMs;
+		this.#speakableIdleMs =
+			typeof speakableIdleMs === "number" && Number.isFinite(speakableIdleMs) && speakableIdleMs >= 0
+				? speakableIdleMs
+				: DEFAULT_SPEAKABLE_IDLE_MS;
 		this.#createTransport = options.createTransport ?? (transportOptions => new CodexLiveTransport(transportOptions));
 		this.#createRecorder =
 			options.createRecorder ?? ((sampleRate, callback) => new AudioCapture(sampleRate, callback));
@@ -299,6 +319,10 @@ export class LiveSessionController {
 
 	async #stop(): Promise<void> {
 		this.#stopped = true;
+		clearTimeout(this.#speakableIdleTimer);
+		this.#speakableIdleTimer = undefined;
+		this.#speakableIdleDeadline = 0;
+		this.#pendingSpeakables.length = 0;
 		this.#unsubscribeSession?.();
 		this.#unsubscribeSession = undefined;
 		// Flush a mid-utterance user transcript (VAD-split or aborted turn) so the
@@ -360,6 +384,7 @@ export class LiveSessionController {
 				break;
 			case "input_transcript.added":
 				this.#recordLiveTranscript("user", event.item.text, false);
+				this.#ingestUserTurn(event.item.text, false);
 				this.#addTranscript("user", event.item.text);
 				break;
 			case "output_transcript.added":
@@ -367,7 +392,11 @@ export class LiveSessionController {
 				break;
 			case "turn.done":
 				this.#recordLiveTranscript(event.turn.role, event.turn.transcript, true);
+				if (event.turn.role === "user") this.#ingestUserTurn(event.turn.transcript, true);
 				this.#finishTranscript(event.turn.role, event.turn.transcript);
+				if (event.turn.role === "assistant") {
+					this.#userTurnLedger = this.#userTurnLedger.filter(turn => turn.claim !== undefined);
+				}
 				break;
 			case "delegation.created":
 				void this.#handleDelegation(event).catch(cause => this.#reportFailure(errorFrom(cause)));
@@ -380,23 +409,39 @@ export class LiveSessionController {
 
 	/**
 	 * Deliver a Codex Realtime coding handoff to the main agent session.
-	 * Newest intent wins: every delegation bumps a generation; whatever is still
-	 * unsent when a newer one arrives is merged, in arrival order, into the
-	 * newest survivor's single prompt. This is the committed voice contract
-	 * (live-instructions.md): split consecutive turns merge before delegation,
-	 * while a request arriving during active work barges in immediately.
+	 * The event contributes only its routing id. Prompt text is assembled from
+	 * canonical user turns recorded by this controller. Newest intent wins:
+	 * unaccepted claims move to the newest routing id, while accepted turns are
+	 * retired and later speech barges into the active work as a new handoff.
 	 */
 	async #handleDelegation(event: Extract<LiveServerEvent, { type: "delegation.created" }>): Promise<void> {
-		let request = "";
-		for (const content of event.item.content) {
-			if (content.type !== "input_text") continue;
-			request += `${request ? "\n" : ""}${content.text}`;
-		}
-		request = request.trim();
-		if (!request) return;
+		if (this.#seenDelegationIds.has(event.item.id)) return;
+		this.#seenDelegationIds.add(event.item.id);
 
 		const generation = ++this.#delegationGeneration;
-		this.#pendingDelegationRequests.push(request);
+		const previousGeneration = this.#pendingDelegation?.generation;
+		const previousDelivery = this.#pendingDelivery;
+		const cancelledPrevious = previousDelivery?.cancel() === true;
+		if (previousDelivery && !cancelledPrevious && previousGeneration !== undefined) {
+			// Acceptance won the race. Those turns already belong to the old
+			// agent turn and must never be folded into this handoff.
+			this.#userTurnLedger = this.#userTurnLedger.filter(turn => turn.claim !== previousGeneration);
+		}
+		this.#pendingDelivery = undefined;
+		if (cancelledPrevious) {
+			await previousDelivery.completed.catch(() => false);
+		}
+		if (generation !== this.#delegationGeneration) return;
+		const claimed = this.#userTurnLedger.filter(turn => turn.claim === undefined || turn.claim === this.#pendingDelegation?.generation);
+		if (claimed.length === 0) return;
+		for (const turn of claimed) turn.claim = generation;
+		this.#pendingDelegation = {
+			id: event.item.id,
+			generation,
+			turns: claimed.map(turn => turn.turn),
+			dispatchEnabled: false,
+			dispatching: false,
+		};
 		this.#emitPhase("working");
 		if (this.#session.isStreaming || this.#session.isBashRunning || this.#session.isEvalRunning) {
 			// Coalesce concurrent live aborts: AgentSession.abort() is not
@@ -413,29 +458,71 @@ export class LiveSessionController {
 			await this.#liveAbortPromise;
 		}
 		if (this.#stopped) return;
-		// Superseded while awaiting: leave our request in the accumulator for the
-		// newest survivor to merge, and do nothing else — no claim, no dispatch.
+		// Superseded while awaiting: the newest survivor owns the ledger claims.
 		if (generation !== this.#delegationGeneration) return;
+		if (this.#pendingDelegation?.generation === generation) {
+			this.#pendingDelegation.dispatchEnabled = true;
+		}
+		await this.#dispatchPendingDelegation(generation);
+	}
 
-		const merged = this.#pendingDelegationRequests.splice(0).join("\n\n").trim();
+	async #dispatchPendingDelegation(generation: number): Promise<void> {
+		const pending = this.#pendingDelegation;
+		if (
+			!pending ||
+			pending.generation !== generation ||
+			!pending.dispatchEnabled ||
+			pending.dispatching
+		) {
+			return;
+		}
+		const turns = pending.turns
+			.map(turnNumber => this.#userTurnLedger.find(turn => turn.turn === turnNumber && turn.claim === generation))
+			.filter((turn): turn is NonNullable<typeof turn> => turn !== undefined);
+		if (turns.length === 0 || turns.some(turn => !turn.final)) return;
+		const merged = turns.map(turn => turn.text).join("\n\n").trim();
 		if (!merged) return;
-		this.#activeDelegationId = event.item.id;
-		this.#lastRelayedResponse = undefined;
-		this.#thinkingRelayedLength = 0;
+		pending.dispatching = true;
+		const delivery = this.#session.sendCustomMessageWithReceipt(
+			{
+				customType: LIVE_DELEGATION_MESSAGE_TYPE,
+				content: merged,
+				display: true,
+				attribution: "agent",
+			},
+			{ triggerTurn: true },
+		);
+		this.#pendingDelivery = delivery;
+		void delivery.completed.catch(() => {});
+		let accepted = false;
 		try {
-			await this.#session.sendCustomMessage(
-				{
-					customType: LIVE_DELEGATION_MESSAGE_TYPE,
-					content: merged,
-					display: true,
-					attribution: "agent",
-				},
-				{ triggerTurn: true },
-			);
+			await delivery.accepted;
+			accepted = true;
+			if (generation !== this.#delegationGeneration) return;
+			this.#userTurnLedger = this.#userTurnLedger.filter(turn => turn.claim !== generation);
+			this.#pendingDelegation = undefined;
+			this.#pendingDelivery = undefined;
+			this.#activeDelegationId = pending.id;
+			this.#lastRelayedResponse = undefined;
+			this.#thinkingRelayedLength = 0;
+			await delivery.completed;
 		} catch (cause) {
 			// A newer delegation barging in aborts this turn mid-await; that
 			// rejection is expected and must not kill the live call.
-			if (generation === this.#delegationGeneration) throw cause;
+			if (generation !== this.#delegationGeneration) return;
+			if (!accepted) {
+				// Normalization/preflight/drop failures occur before ownership.
+				// Release the claim but retain the canonical transcript so a
+				// later, distinct delegation trigger can retry it.
+				for (const turn of this.#userTurnLedger) {
+					if (turn.claim === generation) turn.claim = undefined;
+				}
+				this.#pendingDelegation = undefined;
+				this.#pendingDelivery = undefined;
+				this.#refreshAudioPhase();
+				return;
+			}
+			throw cause;
 		}
 	}
 
@@ -563,12 +650,48 @@ export class LiveSessionController {
 			}
 			item = `${units.join("").trimEnd()}…`;
 		}
+		if (Date.now() < this.#speakableIdleDeadline) {
+			this.#pendingSpeakables.push(item);
+			return;
+		}
+		clearTimeout(this.#speakableIdleTimer);
+		this.#speakableIdleTimer = undefined;
+		this.#speakableIdleDeadline = 0;
+		this.#flushPendingSpeakables();
+		this.#sendSpeakable(item);
+	}
+
+	#sendSpeakable(item: string): void {
 		const delegationId = this.#activeDelegationId;
 		this.#queueSend(
 			delegationId
 				? buildDelegationContextAppend(delegationId, item, "speakable")
 				: buildSessionContextAppend(item, "speakable"),
 		);
+	}
+
+	#markUserActivity(): void {
+		if (this.#stopped) return;
+		this.#speakableIdleDeadline = Date.now() + this.#speakableIdleMs;
+		this.#speakableIdleTimer ??= setTimeout(() => this.#handleSpeakableIdle(), this.#speakableIdleMs);
+	}
+
+	#handleSpeakableIdle(): void {
+		this.#speakableIdleTimer = undefined;
+		if (this.#stopped) return;
+		const remaining = this.#speakableIdleDeadline - Date.now();
+		if (remaining > 0) {
+			this.#speakableIdleTimer = setTimeout(() => this.#handleSpeakableIdle(), remaining);
+			return;
+		}
+		this.#speakableIdleDeadline = 0;
+		this.#flushPendingSpeakables();
+	}
+
+	#flushPendingSpeakables(): void {
+		if (this.#stopped) return;
+		for (const item of this.#pendingSpeakables) this.#sendSpeakable(item);
+		this.#pendingSpeakables.length = 0;
 	}
 
 	#handleOutputLevel(level: number): void {
@@ -585,6 +708,7 @@ export class LiveSessionController {
 		const outputActive = this.#outputLevel > OUTPUT_ACTIVE_LEVEL;
 		const echoThreshold = Math.max(MIN_BARGE_IN_LEVEL, this.#outputLevel * OUTPUT_ECHO_RATIO);
 		if (outputActive && this.#inputLevel < echoThreshold) return;
+		if (this.#inputLevel >= MIN_BARGE_IN_LEVEL) this.#markUserActivity();
 		try {
 			this.#transport.pushAudio(samples);
 		} catch (cause) {
@@ -594,6 +718,7 @@ export class LiveSessionController {
 
 	#addTranscript(role: LiveTranscript["role"], text: string): void {
 		if (!text) return;
+		if (role === "user" && text.trim()) this.#markUserActivity();
 		const current = role === "user" ? this.#userTranscript : this.#assistantTranscript;
 		const wasFinal = role === "user" ? this.#userTranscriptFinal : this.#assistantTranscriptFinal;
 		let next: string;
@@ -616,6 +741,7 @@ export class LiveSessionController {
 
 	#finishTranscript(role: LiveTranscript["role"], text: string): void {
 		if (!text) return;
+		if (role === "user" && text.trim()) this.#markUserActivity();
 		const current = role === "user" ? this.#userTranscript : this.#assistantTranscript;
 		const wasFinal = role === "user" ? this.#userTranscriptFinal : this.#assistantTranscriptFinal;
 		if (!current) {
@@ -656,6 +782,30 @@ export class LiveSessionController {
 			return;
 		}
 		this.#emitTranscript({ role, turn, text: normalized, final });
+	}
+
+	#ingestUserTurn(text: string, final: boolean): void {
+		const normalized = text.trim();
+		if (!normalized) return;
+		let current = this.#userTurnLedger[this.#userTurnLedger.length - 1];
+		if (!current || current.final) {
+			current = { turn: ++this.#userLedgerTurn, text: normalized, final };
+			this.#userTurnLedger.push(current);
+		} else if (final) {
+			// turn.done is authoritative, including contractions of a partial.
+			current.text = normalized;
+			current.final = true;
+		} else if (normalized.startsWith(current.text)) {
+			current.text = normalized;
+		} else if (!current.text.startsWith(normalized)) {
+			current.text += normalized;
+		}
+		const pendingGeneration = this.#pendingDelegation?.generation;
+		if (final && pendingGeneration !== undefined) {
+			void this.#dispatchPendingDelegation(pendingGeneration).catch(cause =>
+				this.#reportFailure(errorFrom(cause)),
+			);
+		}
 	}
 
 	/**

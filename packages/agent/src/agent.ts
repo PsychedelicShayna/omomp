@@ -338,6 +338,8 @@ export interface AgentOptions {
 
 export interface AgentPromptOptions {
 	toolChoice?: ToolChoice;
+	/** Called once the initial messages have entered the running agent loop. */
+	onAccepted?: () => void;
 }
 
 /** Buffered Cursor exec-channel tool result waiting to be emitted after the assistant message. */
@@ -1523,6 +1525,7 @@ export class Agent {
 		let partial: AgentMessage | null = null;
 		const completedToolCallIds = new Set<string>();
 		let turnOpen = false;
+		let acceptanceNotified = false;
 
 		try {
 			const stream = messages
@@ -1530,7 +1533,13 @@ export class Agent {
 				: agentLoopContinue(context, config, loopSignal, this.streamFn);
 
 			for await (const event of stream) {
-				if (event.type === "turn_start") turnOpen = true;
+				if (event.type === "turn_start") {
+					if (!acceptanceNotified) {
+						acceptanceNotified = true;
+						options?.onAccepted?.();
+					}
+					turnOpen = true;
+				}
 				if (event.type === "turn_end") turnOpen = false;
 				// Update internal state based on events
 				switch (event.type) {

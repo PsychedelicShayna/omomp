@@ -248,6 +248,7 @@ import type {
 	SessionHandoffOptions,
 	SessionOAuthAccountList,
 	SessionStats,
+	UsageFallbackConfirmation,
 	UsageFallbackConfirmer,
 } from "./agent-session-types";
 import { writeArtifact } from "./artifacts";
@@ -494,10 +495,22 @@ function cloneMessageEndNotification(message: AgentMessage): AgentMessage {
 const INTERRUPTED_THINKING_MIN_CHARS = 60;
 const SESSION_CWD_CHANGE_REJECTED = Symbol("sessionCwdChangeRejected");
 
+/** Lifecycle of one custom-message delivery. */
+export interface CustomMessageDelivery {
+	/** Settles when the message crosses into irreversible local ownership. */
+	readonly accepted: Promise<void>;
+	/** Settles when the resulting turn completes, or immediately for queued/appended delivery. */
+	readonly completed: Promise<boolean>;
+	/** Cancels only while acceptance is still pending. */
+	cancel(): boolean;
+}
+
 export class AgentSession {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;
 	readonly settings: Settings;
+	/** Serializes receipt-backed preparation through acceptance, not turn completion. */
+	#customMessageReceiptPreparation: Promise<void> = Promise.resolve();
 	/** Entries of tools mounted under `xd://`; empty when virtual devices are unmounted. */
 	getXdevToolEntries: () => Array<{ name: string; summary: string }>;
 	readonly yieldQueue: YieldQueue;
@@ -4705,14 +4718,20 @@ export class AgentSession {
 		}
 	}
 
-	async #runUsageAwarePreflightForNextModelCall(signal?: AbortSignal): Promise<boolean> {
-		const allowed = await this.#runUsageAwarePreflight(signal);
+	async #runUsageAwarePreflightForNextModelCall(
+		signal?: AbortSignal,
+		confirmer: UsageFallbackConfirmer | undefined = this.#usageFallbackConfirmer,
+	): Promise<boolean> {
+		const allowed = await this.#runUsageAwarePreflight(signal, confirmer);
 		this.#usagePreflightReadyForNextModelCall = allowed;
 		this.#usagePreflightReadyModel = allowed ? this.model : undefined;
 		return allowed;
 	}
 
-	async #runUsageAwarePreflight(signal?: AbortSignal): Promise<boolean> {
+	async #runUsageAwarePreflight(
+		signal?: AbortSignal,
+		confirmer: UsageFallbackConfirmer | undefined = this.#usageFallbackConfirmer,
+	): Promise<boolean> {
 		if (signal?.aborted) return false;
 		const generation = this.#promptGeneration;
 
@@ -4726,7 +4745,7 @@ export class AgentSession {
 				try {
 					const fallbackCommitted = await this.#recovery.maybeApplyUsageAwareFallback(
 						controller.signal,
-						this.#usageFallbackConfirmer,
+						confirmer,
 					);
 					if (fallbackCommitted) return true;
 					if (controller.signal.aborted || this.#promptGeneration !== generation) return false;
@@ -6666,23 +6685,121 @@ export class AgentSession {
 
 	async #promptAgentInitiatedMessage(
 		message: CustomMessage,
-		options?: { acceptTerminalEmptyStop?: boolean },
-	): Promise<void> {
+		options?: {
+			acceptTerminalEmptyStop?: boolean;
+			onAccepted?: () => void;
+			isCancelled?: () => boolean;
+			signal?: AbortSignal;
+		},
+	): Promise<boolean> {
 		this.#beginInFlight();
+		let receiptConfirmation: Promise<boolean> | undefined;
+		const confirmer = this.#usageFallbackConfirmer
+			? (confirmation: UsageFallbackConfirmation, signal: AbortSignal) => {
+					receiptConfirmation = Promise.resolve(this.#usageFallbackConfirmer?.(confirmation, signal) ?? false);
+					return receiptConfirmation;
+				}
+			: undefined;
 		try {
-			if (!(await this.#runUsageAwarePreflightForNextModelCall())) return;
+			if (!(await this.#runUsageAwarePreflightForNextModelCall(options?.signal, confirmer))) return false;
+			if (options?.isCancelled?.()) return false;
 			const acceptTerminalEmptyStop = options?.acceptTerminalEmptyStop === true;
 			if (acceptTerminalEmptyStop) {
 				this.#resetPromptMaintenanceState();
 			}
 			this.#recovery.setAcceptTerminalEmptyStop(acceptTerminalEmptyStop);
-			await this.agent.prompt(message);
+			await this.agent.prompt(message, { onAccepted: options?.onAccepted });
 			await this.#waitForPostPromptRecovery();
+			return true;
 		} finally {
+			if (options?.signal?.aborted && receiptConfirmation) {
+				await receiptConfirmation.catch(() => false);
+			}
 			this.#usagePreflightReadyForNextModelCall = false;
 			this.#recovery.setAcceptTerminalEmptyStop(false);
 			this.#endInFlight();
 		}
+	}
+
+	/**
+	 * Deliver a custom message with a receipt for the point at which this process
+	 * irreversibly owns it. Cancellation is best-effort and only has an effect
+	 * before that point.
+	 */
+	sendCustomMessageWithReceipt<T = unknown>(
+		message: CustomMessagePayload<T>,
+		options?: {
+			triggerTurn?: boolean;
+			deliverAs?: "steer" | "followUp" | "nextTurn";
+			queueChipText?: string;
+			acceptTerminalEmptyStop?: boolean;
+		},
+	): CustomMessageDelivery {
+		const acceptance = Promise.withResolvers<void>();
+		const cancellation = new AbortController();
+		const predecessor = this.#customMessageReceiptPreparation;
+		const preparation = Promise.withResolvers<void>();
+		this.#customMessageReceiptPreparation = predecessor.catch(() => {}).then(() => preparation.promise);
+		let accepted = false;
+		let cancelled = false;
+		let preparationReleased = false;
+		const releasePreparation = () => {
+			if (preparationReleased) return;
+			preparationReleased = true;
+			preparation.resolve();
+		};
+		const accept = () => {
+			accepted = true;
+			acceptance.resolve();
+			releasePreparation();
+		};
+		const completion = (async () => {
+			await predecessor.catch(() => {});
+			if (cancelled) {
+				releasePreparation();
+				return false;
+			}
+			try {
+				return await this.#sendCustomMessageWithAcceptance(
+					message,
+					options,
+					accept,
+					() => cancelled,
+					cancellation.signal,
+				);
+			} finally {
+				releasePreparation();
+			}
+		})().catch(error => {
+			if (!accepted) acceptance.reject(error);
+			throw error;
+		});
+		void completion.then(
+			delivered => {
+				if (!accepted) {
+					acceptance.reject(
+						new Error(
+							cancelled
+								? "Custom message delivery was cancelled before acceptance."
+								: delivered
+									? "Custom message completed without an acceptance receipt."
+									: "Custom message was not accepted for delivery.",
+						),
+					);
+				}
+			},
+			() => {},
+		);
+		return {
+			accepted: acceptance.promise,
+			completed: completion,
+			cancel: () => {
+				if (accepted || cancelled) return false;
+				cancelled = true;
+				cancellation.abort(new Error("Custom message delivery was cancelled before acceptance."));
+				return true;
+			},
+		};
 	}
 
 	/** Queue a custom message without starting a turn, matching steer/follow-up delivery. */
@@ -6743,6 +6860,21 @@ export class AgentSession {
 			acceptTerminalEmptyStop?: boolean;
 		},
 	): Promise<boolean> {
+		return this.#sendCustomMessageWithAcceptance(message, options);
+	}
+
+	async #sendCustomMessageWithAcceptance<T = unknown>(
+		message: CustomMessagePayload<T>,
+		options: {
+			triggerTurn?: boolean;
+			deliverAs?: "steer" | "followUp" | "nextTurn";
+			queueChipText?: string;
+			acceptTerminalEmptyStop?: boolean;
+		} | undefined,
+		onAccepted?: () => void,
+		isCancelled?: () => boolean,
+		cancellationSignal?: AbortSignal,
+	): Promise<boolean> {
 		const normalizedPayload = normalizeCustomMessagePayload<T>(message);
 		const details =
 			options?.queueChipText && options.deliverAs !== "nextTurn"
@@ -6763,9 +6895,11 @@ export class AgentSession {
 			timestamp: Date.now(),
 		};
 		const normalizedAppMessage = await this.#normalizeAgentMessageImages(appMessage);
+		if (isCancelled?.()) return false;
 		if (this.isStreaming) {
 			if (options?.deliverAs === "nextTurn") {
 				this.#queueHiddenNextTurnMessage(normalizedAppMessage, options?.triggerTurn ?? false);
+				onAccepted?.();
 				return false;
 			}
 			this.#allowQueuedMessageDrainRetry();
@@ -6775,6 +6909,7 @@ export class AgentSession {
 			} else {
 				this.agent.steer(normalizedAppMessage);
 			}
+			onAccepted?.();
 			this.#scheduleIdleQueueDrain();
 			return false;
 		}
@@ -6783,12 +6918,16 @@ export class AgentSession {
 			if (options?.triggerTurn) {
 				if (this.#clientBridge?.deferAgentInitiatedTurns && !this.#allowAcpAgentInitiatedTurns) {
 					this.#queueHiddenNextTurnMessage(normalizedAppMessage, false);
+					onAccepted?.();
 					return false;
 				}
-				await this.#promptAgentInitiatedMessage(normalizedAppMessage, {
+				const delivered = await this.#promptAgentInitiatedMessage(normalizedAppMessage, {
 					acceptTerminalEmptyStop: options.acceptTerminalEmptyStop === true,
+					onAccepted,
+					isCancelled,
+					signal: cancellationSignal,
 				});
-				return true;
+				return delivered;
 			}
 			this.agent.appendMessage(normalizedAppMessage);
 			this.sessionManager.appendCustomMessageEntry(
@@ -6798,16 +6937,21 @@ export class AgentSession {
 				normalizedAppMessage.details,
 				normalizedAppMessage.attribution,
 			);
+			onAccepted?.();
 			return false;
 		}
 
 		if (options?.triggerTurn) {
 			if (this.#clientBridge?.deferAgentInitiatedTurns && !this.#allowAcpAgentInitiatedTurns) {
 				this.#queueHiddenNextTurnMessage(normalizedAppMessage, false);
+				onAccepted?.();
 				return false;
 			}
-			await this.#promptAgentInitiatedMessage(normalizedAppMessage);
-			return true;
+			return this.#promptAgentInitiatedMessage(normalizedAppMessage, {
+				onAccepted,
+				isCancelled,
+				signal: cancellationSignal,
+			});
 		}
 
 		this.agent.appendMessage(normalizedAppMessage);
@@ -6818,6 +6962,7 @@ export class AgentSession {
 			normalizedAppMessage.details,
 			normalizedAppMessage.attribution,
 		);
+		onAccepted?.();
 		return false;
 	}
 
