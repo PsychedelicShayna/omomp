@@ -133,6 +133,17 @@ export const STT_MODEL_OPTIONS = STT_MODELS.map(({ key, label, description }) =>
 	description,
 })) satisfies ReadonlyArray<{ value: SttModelKey; label: string; description: string }>;
 
+export const STT_SELECTION_VALUES = [...STT_MODEL_VALUES, "xai"] as const;
+
+export const STT_SELECTION_OPTIONS = [
+	...STT_MODEL_OPTIONS,
+	{
+		value: "xai",
+		label: "xAI Grok STT",
+		description: "Record a complete utterance, then transcribe it with xAI's native grok-stt service",
+	},
+] as const;
+
 export function isSttModelKey(value: string): value is SttModelKey {
 	return STT_MODELS.some(model => model.key === value);
 }

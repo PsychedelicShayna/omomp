@@ -5,6 +5,7 @@ import { type SttStreamHandle, sttClient } from "./asr-client";
 import { downloadSttModel, isSttModelCached } from "./downloader";
 import { resolveSttModelSpec } from "./models";
 import { evaluateSubmitTrigger } from "./submit-trigger";
+import { WavFileRecorder } from "./wav-file-recorder";
 
 export type SttState = "idle" | "recording" | "transcribing";
 
@@ -31,8 +32,12 @@ interface CaptureHandle {
 }
 
 type CaptureFactory = (onAudio: (error: Error | null, samples: Float32Array) => void) => CaptureHandle;
+type BatchTranscriber = (
+	audio: Blob,
+	options: { filename: string; language?: string; signal?: AbortSignal },
+) => Promise<string>;
 
-/** Coordinates native microphone capture with incremental local transcription. */
+/** Coordinates native microphone capture with local streaming or xAI batch transcription. */
 export class STTController {
 	#state: SttState = "idle";
 	#resolvedModelKey: string | null = null;
@@ -40,6 +45,7 @@ export class STTController {
 	#stopAfterStart = false;
 	#disposed = false;
 	readonly #createCapture: CaptureFactory;
+	readonly #transcribeBatch: BatchTranscriber | undefined;
 
 	// Live streaming capture.
 	#stream: SttStreamHandle | null = null;
@@ -49,9 +55,21 @@ export class STTController {
 	#streamAbort: AbortController | null = null;
 	#streamUtterance = "";
 
-	/** Creates a controller; tests may replace the hardware capture boundary. */
-	constructor(createCapture: CaptureFactory = onAudio => new AudioCapture(16_000, onAudio)) {
+	// Cloud batch capture. Finalized recordings remain recoverable until the
+	// controller is disposed; only the sixth recording evicts the oldest.
+	#batchRecorder: CaptureHandle | null = null;
+	#batchFile: WavFileRecorder | null = null;
+	#batchEditor: Editor | null = null;
+	#batchAbort: AbortController | null = null;
+	readonly #retainedBatchFiles: WavFileRecorder[] = [];
+
+	/** Creates a controller; tests may replace hardware capture and cloud transcription. */
+	constructor(
+		createCapture: CaptureFactory = onAudio => new AudioCapture(16_000, onAudio),
+		transcribeBatch?: BatchTranscriber,
+	) {
 		this.#createCapture = createCapture;
+		this.#transcribeBatch = transcribeBatch;
 	}
 
 	get state(): SttState {
@@ -146,12 +164,139 @@ export class STTController {
 	}
 
 	async #start(editor: Editor, options: ToggleOptions): Promise<void> {
+		if (settings.get("stt.modelName") === "xai") {
+			await this.#startBatch(editor, options);
+			return;
+		}
 		if (!(await this.#ensureDeps(options))) return;
 		await this.#startStreaming(editor, options);
 	}
 
 	async #stop(options: ToggleOptions): Promise<void> {
+		if (this.#batchFile) {
+			await this.#stopBatch(options);
+			return;
+		}
 		await this.#stopStreaming(options);
+	}
+
+	async #startBatch(editor: Editor, options: ToggleOptions): Promise<void> {
+		if (!this.#transcribeBatch) {
+			options.showWarning("xAI speech-to-text is unavailable in this session.");
+			return;
+		}
+		const file = new WavFileRecorder();
+		this.#batchFile = file;
+		this.#batchEditor = editor;
+		this.#batchAbort = new AbortController();
+		try {
+			this.#batchRecorder = this.#createCapture((error, samples) => {
+				if (this.#disposed || this.#batchFile !== file || this.#state !== "recording") return;
+				if (error) {
+					this.#handleBatchCaptureError(error, options);
+					return;
+				}
+				file.append(samples);
+			});
+		} catch (error) {
+			this.#cleanupBatch(true);
+			const message = error instanceof Error ? error.message : "Failed to start microphone capture";
+			options.showWarning(message);
+			logger.error("xAI STT recording failed to start", { error: message });
+			return;
+		}
+		this.#setState("recording", options);
+		logger.debug("xAI STT batch recording started", { path: file.path });
+	}
+
+	async #stopBatch(options: ToggleOptions): Promise<void> {
+		const file = this.#batchFile;
+		const editor = this.#batchEditor;
+		const abort = this.#batchAbort;
+		if (!file || !editor || !this.#transcribeBatch) {
+			this.#cleanupBatch(false);
+			this.#setState("idle", options);
+			return;
+		}
+		this.#setState("transcribing", options);
+		try {
+			this.#batchRecorder?.stop();
+		} catch (error) {
+			logger.debug("xAI STT recorder stop failed", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+		this.#batchRecorder = null;
+		file.finalize();
+		this.#retainBatchFile(file);
+		this.#batchFile = null;
+
+		if (file.empty) {
+			options.showStatus("No speech detected.");
+			this.#cleanupBatch(false);
+			this.#setState("idle", options);
+			return;
+		}
+
+		try {
+			const language = settings.get("stt.language") as string | undefined;
+			const text = (
+				await this.#transcribeBatch(Bun.file(file.path, { type: "audio/wav" }), {
+					filename: "dictation.wav",
+					language: language || undefined,
+					signal: abort?.signal,
+				})
+			).trim();
+			if (text) {
+				editor.insertText(text);
+				options.showStatus("");
+			} else {
+				options.showStatus("No speech detected.");
+			}
+			options.requestRender?.();
+		} catch (error) {
+			if (!this.#disposed) {
+				const message = error instanceof Error ? error.message : "xAI transcription failed";
+				options.showWarning(`${message} Recording retained at ${file.path}`);
+				logger.error("xAI STT transcription failed", { error: message, path: file.path });
+			}
+		}
+		this.#cleanupBatch(false);
+		if (!this.#disposed) this.#setState("idle", options);
+	}
+
+	#handleBatchCaptureError(error: Error, options: ToggleOptions): void {
+		try {
+			this.#batchRecorder?.stop();
+		} catch {
+			// best effort cleanup
+		}
+		this.#batchRecorder = null;
+		const file = this.#batchFile;
+		if (file) {
+			file.finalize();
+			if (file.empty) file.dispose();
+			else this.#retainBatchFile(file);
+		}
+		this.#batchFile = null;
+		this.#cleanupBatch(false);
+		this.#setState("idle", options);
+		const retained = file && !file.empty ? ` Recording retained at ${file.path}` : "";
+		options.showWarning(`${error.message}${retained}`);
+		logger.error("Native microphone capture failed", { error: error.message, path: file?.path });
+	}
+
+	#retainBatchFile(file: WavFileRecorder): void {
+		this.#retainedBatchFiles.push(file);
+		while (this.#retainedBatchFiles.length > 5) this.#retainedBatchFiles.shift()?.dispose();
+	}
+
+	#cleanupBatch(disposeCurrent: boolean): void {
+		if (disposeCurrent) this.#batchFile?.dispose();
+		this.#batchRecorder = null;
+		this.#batchFile = null;
+		this.#batchEditor = null;
+		this.#batchAbort = null;
 	}
 
 	// ── Live streaming ──────────────────────────────────────────────
@@ -303,6 +448,14 @@ export class STTController {
 
 	dispose(): void {
 		this.#disposed = true;
+		this.#batchAbort?.abort();
+		try {
+			this.#batchRecorder?.stop();
+		} catch {
+			// best effort cleanup
+		}
+		this.#cleanupBatch(true);
+		for (const file of this.#retainedBatchFiles.splice(0)) file.dispose();
 		if (this.#streamAbort) {
 			this.#streamAbort.abort();
 			this.#streamAbort = null;

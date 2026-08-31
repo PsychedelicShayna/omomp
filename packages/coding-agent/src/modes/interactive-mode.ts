@@ -119,7 +119,7 @@ import type { SessionManager } from "../session/session-manager";
 import type { ShakeMode } from "../session/shake-types";
 import { BUILTIN_SLASH_COMMAND_RESERVED_NAMES, buildTuiBuiltinSlashCommands } from "../slash-commands/builtin-registry";
 import { formatDuration } from "../slash-commands/helpers/format";
-import { STTController, type SttState } from "../stt";
+import { STTController, type SttState, transcribeXaiAudio } from "../stt";
 import { resolveCliEntryCmd } from "../subprocess/worker-client";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
 import { labelEchoesHandle } from "../task/label";
@@ -5461,7 +5461,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	async handleSTTToggle(): Promise<void> {
 		if (this.#liveCommandController.active) {
-			this.showWarning("End live mode before using push-to-talk speech input.");
+			this.showWarning("End live mode before using speech-to-text input.");
 			return;
 		}
 		if (!settings.get("stt.enabled")) {
@@ -5469,7 +5469,16 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 		if (!this.#sttController) {
-			this.#sttController = new STTController();
+			this.#sttController = new STTController(undefined, (audio, options) =>
+				transcribeXaiAudio({
+					modelRegistry: this.session.modelRegistry,
+					sessionId: this.session.sessionId,
+					audio,
+					filename: options.filename,
+					language: options.language,
+					signal: options.signal,
+				}),
+			);
 		}
 		await this.#sttController.toggle(this.editor, {
 			showWarning: (msg: string) => this.showWarning(msg),

@@ -13,7 +13,7 @@ import {
 	type CompactionMethod,
 	DEFAULT_COMPACTION_METHOD_ORDER,
 } from "../session/compaction-methods";
-import { DEFAULT_STT_MODEL_KEY, STT_MODEL_OPTIONS, STT_MODEL_VALUES } from "../stt/models";
+import { DEFAULT_STT_MODEL_KEY, STT_SELECTION_OPTIONS, STT_SELECTION_VALUES } from "../stt/models";
 import { STT_SUBMIT_TRIGGER_OPTIONS, STT_SUBMIT_TRIGGER_VALUES } from "../stt/submit-trigger";
 import { AUTO_THINKING, getConfiguredThinkingLevelMetadata, getThinkingLevelMetadata } from "../thinking";
 import {
@@ -2433,15 +2433,15 @@ export const SETTINGS_SCHEMA = {
 
 	"stt.modelName": {
 		type: "enum",
-		values: STT_MODEL_VALUES,
+		values: STT_SELECTION_VALUES,
 		default: DEFAULT_STT_MODEL_KEY,
 		ui: {
 			tab: "interaction",
 			group: "Speech",
 			label: "Speech Model",
 			description:
-				"Local on-device speech model. Parakeet TDT v3 (sherpa-onnx) is the SoTA default; Whisper base/small/large-v3-turbo tiers (transformers.js) trade size for multilingual coverage. Downloaded on first use.",
-			options: STT_MODEL_OPTIONS,
+				"Speech-to-text backend. Local Parakeet and Whisper models run on-device; xAI Grok STT records a complete utterance before transcription.",
+			options: STT_SELECTION_OPTIONS,
 		},
 	},
 	"stt.submitTrigger": {

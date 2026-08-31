@@ -231,8 +231,8 @@ export const KEYBINDINGS = {
 		description: "Search history",
 	},
 	"app.stt.toggle": {
-		defaultKeys: [],
-		description: "Toggle speech-to-text (default gesture: hold Space)",
+		defaultKeys: "ctrl+space",
+		description: "Toggle speech-to-text (Ctrl+Space; default gesture: hold Space)",
 	},
 	"app.live.toggle": {
 		defaultKeys: "ctrl+l",
