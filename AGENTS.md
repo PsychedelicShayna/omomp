@@ -79,6 +79,8 @@ Unless user tells you exactly what to write:
 - **Never comment on GitHub** (issues, PRs, discussions).
 - **Never create issues on GitHub**.
 
+Authorized exception: the Issue Funnel seat (`IssueFunnel` / Rue) may publish and amend issues per `docs/agents/issue-funnel.md`. Other seats still follow the two rules above.
+
 ## Code Quality
 
 - No `any` unless absolutely necessary.
