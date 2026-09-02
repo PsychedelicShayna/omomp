@@ -432,7 +432,9 @@ export class LiveSessionController {
 			await previousDelivery.completed.catch(() => false);
 		}
 		if (generation !== this.#delegationGeneration) return;
-		const claimed = this.#userTurnLedger.filter(turn => turn.claim === undefined || turn.claim === this.#pendingDelegation?.generation);
+		const claimed = this.#userTurnLedger.filter(
+			turn => turn.claim === undefined || turn.claim === this.#pendingDelegation?.generation,
+		);
 		if (claimed.length === 0) return;
 		for (const turn of claimed) turn.claim = generation;
 		this.#pendingDelegation = {
@@ -468,19 +470,17 @@ export class LiveSessionController {
 
 	async #dispatchPendingDelegation(generation: number): Promise<void> {
 		const pending = this.#pendingDelegation;
-		if (
-			!pending ||
-			pending.generation !== generation ||
-			!pending.dispatchEnabled ||
-			pending.dispatching
-		) {
+		if (!pending || pending.generation !== generation || !pending.dispatchEnabled || pending.dispatching) {
 			return;
 		}
 		const turns = pending.turns
 			.map(turnNumber => this.#userTurnLedger.find(turn => turn.turn === turnNumber && turn.claim === generation))
 			.filter((turn): turn is NonNullable<typeof turn> => turn !== undefined);
 		if (turns.length === 0 || turns.some(turn => !turn.final)) return;
-		const merged = turns.map(turn => turn.text).join("\n\n").trim();
+		const merged = turns
+			.map(turn => turn.text)
+			.join("\n\n")
+			.trim();
 		if (!merged) return;
 		pending.dispatching = true;
 		const delivery = this.#session.sendCustomMessageWithReceipt(
@@ -802,9 +802,7 @@ export class LiveSessionController {
 		}
 		const pendingGeneration = this.#pendingDelegation?.generation;
 		if (final && pendingGeneration !== undefined) {
-			void this.#dispatchPendingDelegation(pendingGeneration).catch(cause =>
-				this.#reportFailure(errorFrom(cause)),
-			);
+			void this.#dispatchPendingDelegation(pendingGeneration).catch(cause => this.#reportFailure(errorFrom(cause)));
 		}
 	}
 

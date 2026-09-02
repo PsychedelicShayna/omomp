@@ -5,11 +5,7 @@ import type { ExternalHarnessAdapter } from "./types";
 
 export { ClaudeExternalHarnessAdapter, claudeExternalHarnessAdapter } from "./claude";
 export { codexExternalHarnessAdapter } from "./codex";
-export type {
-	ExternalHarnessAdapter,
-	ExternalHarnessInput,
-	ExternalHarnessIsolationContext,
-} from "./types";
+export type { ExternalHarnessAdapter, ExternalHarnessInput, ExternalHarnessIsolationContext } from "./types";
 
 const CLAUDE_TOOLS = new Set(["read", "grep", "glob", "web_search", "web_fetch", "edit", "write", "yield"]);
 

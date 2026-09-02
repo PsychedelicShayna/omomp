@@ -109,11 +109,13 @@ function usageFrom(message: Extract<SidecarMessage, { type: "result" }>): Usage 
 export class ClaudeExternalHarnessAdapter implements ExternalHarnessAdapter {
 	async execute(input: ExternalHarnessInput): Promise<SingleResult> {
 		let proc: Bun.Subprocess | undefined;
-		let sendInterrupt: ((frame: unknown) => Promise<void>) | undefined;
+		const interrupt = {
+			send: undefined as ((frame: unknown) => Promise<void>) | undefined,
+		};
 		let aborting = false;
 		const abort = () => {
 			aborting = true;
-			if (sendInterrupt) void sendInterrupt({ type: "interrupt" }).catch(() => {});
+			if (interrupt.send) void interrupt.send({ type: "interrupt" }).catch(() => {});
 			if (proc) void terminate(proc);
 		};
 		input.signal.addEventListener("abort", abort, { once: true });
@@ -179,7 +181,7 @@ export class ClaudeExternalHarnessAdapter implements ExternalHarnessAdapter {
 			writer.write(encoded);
 			await writer.flush();
 		};
-		sendInterrupt = send;
+		interrupt.send = send;
 		let final: Extract<SidecarMessage, { type: "result" }> | undefined;
 		let failure: string | undefined;
 		let output = "";

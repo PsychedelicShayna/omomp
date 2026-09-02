@@ -6939,12 +6939,14 @@ export class AgentSession {
 
 	async #sendCustomMessageWithAcceptance<T = unknown>(
 		message: CustomMessagePayload<T>,
-		options: {
-			triggerTurn?: boolean;
-			deliverAs?: "steer" | "followUp" | "nextTurn";
-			queueChipText?: string;
-			acceptTerminalEmptyStop?: boolean;
-		} | undefined,
+		options:
+			| {
+					triggerTurn?: boolean;
+					deliverAs?: "steer" | "followUp" | "nextTurn";
+					queueChipText?: string;
+					acceptTerminalEmptyStop?: boolean;
+			  }
+			| undefined,
 		onAccepted?: () => void,
 		isCancelled?: () => boolean,
 		cancellationSignal?: AbortSignal,
