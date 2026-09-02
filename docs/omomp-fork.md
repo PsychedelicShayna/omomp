@@ -6,14 +6,14 @@ This note records committed fork work only. Dirty live-controller experiments in
 
 ## How to re-diff
 
-As of 29 Aug 2026 the comparison base is `upstream/main` at `33cc6b9a043a74e00a157e72ca909272796d8461`, which equals tag `v18.0.10` and `git merge-base omomp upstream/main`.
+As of 2 Sep 2026 the comparison base is tag `v18.1.2` at `86bf72f52947f62ecaf9bd28e35572812e725a92`, which equals `git merge-base omomp v18.1.2`.
 
 ```sh
-git log --no-merges upstream/main..omomp
-git diff --stat upstream/main...omomp
+git log --no-merges v18.1.2..omomp
+git diff --stat v18.1.2...omomp
 ```
 
-Local `omomp` then sat at merge `b41d0f60c15245ace5cc900f76288461a1d62c4c`. The first fork batch is 11 Aug 2026. The latest non-merge on that range is `d9339a9e1d007c9f7a27247ddf0dc7fb30cd5ce5`, 27 Aug 2026. Counts move; re-run the commands.
+Local `omomp` then sat at merge `ddd6e79f8ac714483cf7d60182666e2c33481a2c` (`Merge tag 'v18.1.2' into omomp`). The first fork batch is 11 Aug 2026. Counts move; re-run the commands.
 
 The kernels for Python, JavaScript, Ruby, and Julia already existed upstream for the `eval` tool. The fork opened the user eval path to those languages, then added extensions, live voice, and install policy around that.
 
@@ -93,7 +93,7 @@ Provenance: `da8bb86645`, `e795702ff4`, `64380829e2`, `05380db554`, `bc1c74703d`
 
 ## Upstream merges
 
-Bookkeeping only. The tip merge is `b41d0f60c1`, subject `Merge upstream v18.0.10 into omomp`. Earlier: `b2b440dd27`, `18c553f29e`, `fea38c78ad`, `3ba6ea8dbb`, `35f3e870da`.
+Bookkeeping only. The tip merge is `ddd6e79f8a`, subject `Merge tag 'v18.1.2' into omomp`. Earlier: `e84e889a55` (v18.0.11), `b41d0f60c1` (v18.0.10), `b2b440dd27`, `18c553f29e`, `fea38c78ad`, `3ba6ea8dbb`, `35f3e870da`.
 
 ## What this file is not
 
