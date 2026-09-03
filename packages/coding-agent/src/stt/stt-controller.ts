@@ -43,6 +43,10 @@ export class STTController {
 	#resolvedModelKey: string | null = null;
 	#toggling = false;
 	#stopAfterStart = false;
+	/** True while the space-hold push-to-talk gesture owns the active capture. Only the route that
+	 *  started a capture may finalize it, so a hold recognized mid-capture can never submit a
+	 *  recording the `app.stt.toggle` chord started. */
+	#holdOwned = false;
 	#disposed = false;
 	readonly #createCapture: CaptureFactory;
 	readonly #transcribeBatch: BatchTranscriber | undefined;
@@ -108,6 +112,28 @@ export class STTController {
 		} finally {
 			this.#toggling = false;
 		}
+	}
+
+	/** A sustained space-bar hold was recognized. Starts a capture only from idle: when one is
+	 *  already running — the `app.stt.toggle` chord started it, or a transcription is still
+	 *  settling — the gesture stays inert instead of toggling that capture off and discarding
+	 *  what the user has said so far. */
+	async holdStart(editor: Editor, options: ToggleOptions): Promise<void> {
+		if (this.state !== "idle") return;
+		this.#holdOwned = true;
+		await this.toggle(editor, options);
+		// A start can fail outright (no microphone, provider unavailable), leaving the state idle;
+		// drop ownership so the matching release stays inert.
+		if (this.state === "idle") this.#holdOwned = false;
+	}
+
+	/** The held space bar was released. Stops only a capture {@link holdStart} started; a release
+	 *  that follows an inert hold, or a capture already stopped by the chord, is a no-op. */
+	async holdEnd(editor: Editor, options: ToggleOptions): Promise<void> {
+		if (!this.#holdOwned) return;
+		this.#holdOwned = false;
+		if (this.state !== "recording") return;
+		await this.toggle(editor, options);
 	}
 
 	async #ensureDeps(options: ToggleOptions): Promise<boolean> {

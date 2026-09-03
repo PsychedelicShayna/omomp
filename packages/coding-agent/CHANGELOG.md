@@ -5,6 +5,7 @@
 ### Fixed
 
 - Claude marketplace MCP servers now resolve environment placeholders in stdio environment values instead of passing strings such as `${NAME:-}` literally ([#10481](https://github.com/can1357/oh-my-pi/pull/10481) by [@mrexodia](https://github.com/mrexodia)).
+- Holding the space bar no longer interrupts a dictation started with the `app.stt.toggle` keybinding: the push-to-talk gesture now stays inert while another speech capture is in flight and only stops the recording it started itself.
 ## [18.1.2] - 2026-09-01
 
 ### Added
