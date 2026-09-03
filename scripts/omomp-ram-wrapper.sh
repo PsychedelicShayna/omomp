@@ -2,11 +2,15 @@
 
 set -euo pipefail
 if [[ -n "${OMOMP_TMUX_ENV_FILE:-}" ]]; then
-	# Restore the caller's complete exported environment rather than inheriting
-	# stale values from a pre-existing tmux server.
+	# Restore the caller's complete exported environment without clobbering the
+	# terminal identity selected by tmux itself.
+	tmux_term="${TERM:-}"
 	source "$OMOMP_TMUX_ENV_FILE"
 	rm -f -- "$OMOMP_TMUX_ENV_FILE"
 	unset OMOMP_TMUX_ENV_FILE
+	if [[ -n "$tmux_term" ]]; then
+		export TERM="$tmux_term"
+	fi
 fi
 
 
@@ -71,10 +75,15 @@ if ((interactive)) && [[ -z "${TMUX:-}" && -z "${OMOMP_TMUX_BOOTSTRAPPED:-}" ]];
 	exec 8>&-
 	env_file="$RAM_PROFILE/.tmux-env-$$"
 	export -p >"$env_file"
-	exec tmux new-session -s "omomp-${UID}-$$" -- env \
+	set +e
+	tmux new-session -s "omomp-${UID}-$$" -- env \
 		OMOMP_TMUX_BOOTSTRAPPED=1 \
 		OMOMP_TMUX_ENV_FILE="$env_file" \
 		"$0" "$@"
+	tmux_status=$?
+	set -e
+	rm -f -- "$env_file"
+	exit "$tmux_status"
 fi
 
 exec 9>"$LOCK_FILE"

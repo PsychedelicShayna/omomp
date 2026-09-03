@@ -355,16 +355,20 @@ async function inspectDevice(device: string): Promise<DeviceInfo> {
 	const row = (JSON.parse(raw) as { blockdevices?: LsblkRow[] }).blockdevices?.[0];
 	if (!row) throw new FlashError(`lsblk returned nothing for ${device}`);
 	const unsafeUsers: string[] = [];
-	const inspectChildren = (children: readonly LsblkRow[] | undefined, depth: number): void => {
+	const rootMounts = Array.isArray(row.mountpoints) ? row.mountpoints.filter(Boolean).map(String) : [];
+	if (rootMounts.length > 0) {
+		unsafeUsers.push(`${typeof row.path === "string" ? row.path : device} mounted at ${rootMounts.join(",")}`);
+	}
+	const inspectChildren = (children: readonly LsblkRow[] | undefined): void => {
 		for (const child of children ?? []) {
 			const childPath = typeof child.path === "string" ? child.path : "(unknown)";
 			const mounts = Array.isArray(child.mountpoints) ? child.mountpoints.filter(Boolean).map(String) : [];
 			if (mounts.length > 0) unsafeUsers.push(`${childPath} mounted at ${mounts.join(",")}`);
-			if (depth > 0 && child.type !== "part") unsafeUsers.push(`${childPath} holder (${String(child.type)})`);
-			inspectChildren(child.children, depth + 1);
+			if (child.type !== "part") unsafeUsers.push(`${childPath} holder (${String(child.type)})`);
+			inspectChildren(child.children);
 		}
 	};
-	inspectChildren(row.children, 0);
+	inspectChildren(row.children);
 	return {
 		path: typeof row.path === "string" ? row.path : device,
 		type: String(row.type),
@@ -426,6 +430,10 @@ export async function copySelected(
 			target = await fs.realpath(source);
 		} catch {
 			skipped.push(`${source} (dangling symlink)`);
+			return;
+		}
+		if (source.endsWith(".db")) {
+			await snapshotDatabase(target, destination);
 			return;
 		}
 		await copySelected(target, destination, skipped, seen);
