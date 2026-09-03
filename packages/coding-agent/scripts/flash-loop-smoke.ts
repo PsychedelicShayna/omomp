@@ -57,7 +57,7 @@ try {
 	await fs.writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
 	await run(["umount", stateMount]);
 
-	await run([binary, "flash", "--resume", "--user", username, loop], `${loop}\n${passphrase}\n`);
+	await run([binary, "flash", "--resume", "--force", "--user", username, loop], `${loop}\n${passphrase}\n`);
 	if ((await run(["blkid", "-o", "value", "-s", "UUID", esp])) !== espUuid) throw new Error("ESP UUID changed on resume");
 	if ((await run(["blkid", "-o", "value", "-s", "UUID", luks])) !== luksUuid) throw new Error("LUKS UUID changed on resume");
 
