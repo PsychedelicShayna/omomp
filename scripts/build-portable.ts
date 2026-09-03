@@ -11,6 +11,7 @@ const packageDir = path.join(repoRoot, "packages/coding-agent");
 const nativeDir = path.join(repoRoot, "packages/natives/native");
 const baselineNativeName = "pi_natives.linux-x64-baseline.node";
 const compileTarget = "bun-linux-x64-baseline" as const;
+const wrapperName = "omomp-ram-wrapper.sh" as const;
 
 export interface PortableManifest {
 	readonly schemaVersion: 1;
@@ -20,6 +21,7 @@ export interface PortableManifest {
 	readonly compileTarget: typeof compileTarget;
 	readonly binary: { readonly filename: "omomp"; readonly sha256: string };
 	readonly native: { readonly filename: typeof baselineNativeName; readonly sha256: string };
+	readonly wrapper: { readonly filename: typeof wrapperName; readonly sha256: string };
 	readonly nativeBuildRoute: "bazel" | "cargo";
 	readonly rustTargetCpu: "x86-64-v2";
 	readonly embeddedNativeVariants: readonly ["baseline"];
@@ -141,6 +143,10 @@ export async function buildPortable(): Promise<PortableManifest> {
 		});
 		await fs.chmod(binaryPath, 0o755);
 		await fs.copyFile(nativePath, path.join(stagingDir, baselineNativeName));
+		const wrapperSource = path.join(repoRoot, "scripts", wrapperName);
+		const wrapperPath = path.join(stagingDir, wrapperName);
+		await fs.copyFile(wrapperSource, wrapperPath);
+		await fs.chmod(wrapperPath, 0o755);
 
 		const manifest: PortableManifest = {
 			schemaVersion: 1,
@@ -150,6 +156,7 @@ export async function buildPortable(): Promise<PortableManifest> {
 			compileTarget,
 			binary: { filename: "omomp", sha256: await sha256(binaryPath) },
 			native: { filename: baselineNativeName, sha256: await sha256(nativePath) },
+			wrapper: { filename: wrapperName, sha256: await sha256(wrapperPath) },
 			nativeBuildRoute,
 			rustTargetCpu: "x86-64-v2",
 			embeddedNativeVariants: ["baseline"],

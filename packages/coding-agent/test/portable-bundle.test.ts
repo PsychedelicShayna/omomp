@@ -6,6 +6,7 @@ import * as path from "node:path";
 import {
 	PORTABLE_COMPILE_TARGET,
 	PORTABLE_NATIVE_FILENAME,
+	PORTABLE_WRAPPER_FILENAME,
 	resolvePortableBundleDirectory,
 	validatePortableBundle,
 } from "../src/cli/portable-bundle";
@@ -23,6 +24,7 @@ async function fixture(): Promise<{ dir: string; binary: string }> {
 	const binary = path.join(dir, "omomp");
 	await fs.writeFile(binary, "binary");
 	await fs.writeFile(path.join(dir, PORTABLE_NATIVE_FILENAME), "native");
+	await fs.writeFile(path.join(dir, PORTABLE_WRAPPER_FILENAME), "wrapper");
 	await fs.writeFile(
 		path.join(dir, "manifest.json"),
 		JSON.stringify({
@@ -33,6 +35,7 @@ async function fixture(): Promise<{ dir: string; binary: string }> {
 			compileTarget: PORTABLE_COMPILE_TARGET,
 			binary: { filename: "omomp", sha256: digest("binary") },
 			native: { filename: PORTABLE_NATIVE_FILENAME, sha256: digest("native") },
+			wrapper: { filename: PORTABLE_WRAPPER_FILENAME, sha256: digest("wrapper") },
 			nativeBuildRoute: "cargo",
 			rustTargetCpu: "x86-64-v2",
 			embeddedNativeVariants: ["baseline"],
@@ -74,6 +77,18 @@ describe("portable bundle gate", () => {
 	test("refuses a digest mismatch", async () => {
 		const { dir, binary } = await fixture();
 		await fs.writeFile(binary, "changed");
+		await expect(
+			validatePortableBundle({
+				env: { OMOMP_PORTABLE_BUNDLE: dir },
+				execPath: binary,
+				compileTarget: PORTABLE_COMPILE_TARGET,
+			}),
+		).rejects.toThrow("digest mismatch");
+	});
+
+	test("refuses a wrapper digest mismatch", async () => {
+		const { dir, binary } = await fixture();
+		await fs.writeFile(path.join(dir, PORTABLE_WRAPPER_FILENAME), "changed");
 		await expect(
 			validatePortableBundle({
 				env: { OMOMP_PORTABLE_BUNDLE: dir },

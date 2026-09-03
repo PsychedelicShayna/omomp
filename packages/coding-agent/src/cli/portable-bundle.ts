@@ -6,6 +6,7 @@ import * as path from "node:path";
 export const PORTABLE_COMPILE_TARGET = "bun-linux-x64-baseline" as const;
 export const PORTABLE_COMPATIBILITY_TIER = "linux-x64-baseline" as const;
 export const PORTABLE_NATIVE_FILENAME = "pi_natives.linux-x64-baseline.node" as const;
+export const PORTABLE_WRAPPER_FILENAME = "omomp-ram-wrapper.sh" as const;
 
 export interface PortableBundleManifest {
 	readonly schemaVersion: 1;
@@ -15,6 +16,7 @@ export interface PortableBundleManifest {
 	readonly compileTarget: typeof PORTABLE_COMPILE_TARGET;
 	readonly binary: { readonly filename: "omomp"; readonly sha256: string };
 	readonly native: { readonly filename: typeof PORTABLE_NATIVE_FILENAME; readonly sha256: string };
+	readonly wrapper: { readonly filename: typeof PORTABLE_WRAPPER_FILENAME; readonly sha256: string };
 	readonly nativeBuildRoute: "bazel" | "cargo";
 	readonly rustTargetCpu: "x86-64-v2";
 	readonly embeddedNativeVariants: readonly ["baseline"];
@@ -24,6 +26,7 @@ export interface PortableBundle {
 	readonly directory: string;
 	readonly binaryPath: string;
 	readonly nativePath: string;
+	readonly wrapperPath: string;
 	readonly manifestPath: string;
 	readonly manifest: PortableBundleManifest;
 }
@@ -44,6 +47,7 @@ function parseManifest(value: unknown): PortableBundleManifest {
 	const manifest = value as Record<string, unknown>;
 	const binary = manifest.binary as Record<string, unknown> | undefined;
 	const native = manifest.native as Record<string, unknown> | undefined;
+	const wrapper = manifest.wrapper as Record<string, unknown> | undefined;
 	if (
 		manifest.schemaVersion !== 1 ||
 		typeof manifest.version !== "string" ||
@@ -58,7 +62,9 @@ function parseManifest(value: unknown): PortableBundleManifest {
 		binary?.filename !== "omomp" ||
 		!isSha256(binary.sha256) ||
 		native?.filename !== PORTABLE_NATIVE_FILENAME ||
-		!isSha256(native.sha256)
+		!isSha256(native.sha256) ||
+		wrapper?.filename !== PORTABLE_WRAPPER_FILENAME ||
+		!isSha256(wrapper.sha256)
 	) {
 		throw new PortableBundleError(`Portable manifest is not an attested linux-x64 baseline bundle.\n${RECOVERY}`);
 	}
@@ -102,9 +108,11 @@ export async function validatePortableBundle(options: {
 	}
 	const binaryPath = path.join(directory, manifest.binary.filename);
 	const nativePath = path.join(directory, manifest.native.filename);
+	const wrapperPath = path.join(directory, manifest.wrapper.filename);
 	for (const [label, filePath, expected] of [
 		["binary", binaryPath, manifest.binary.sha256],
 		["native", nativePath, manifest.native.sha256],
+		["wrapper", wrapperPath, manifest.wrapper.sha256],
 	] as const) {
 		let actual: string;
 		try {
@@ -118,5 +126,5 @@ export async function validatePortableBundle(options: {
 			);
 		}
 	}
-	return { directory, binaryPath, nativePath, manifestPath, manifest };
+	return { directory, binaryPath, nativePath, wrapperPath, manifestPath, manifest };
 }

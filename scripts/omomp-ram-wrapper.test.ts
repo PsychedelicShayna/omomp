@@ -29,7 +29,7 @@ async function fixture(): Promise<Fixture> {
 	await fs.writeFile(path.join(bundle, "ram-filter.rules"), buildRamFilter());
 	await fs.writeFile(
 		binary,
-		`#!/usr/bin/env bash\nset -eu\ncase "\${1:-}" in\n  show) cat "$PI_CODING_AGENT_DIR/config.yml" ;;\n  mutate) mkdir -p "$PI_CODING_AGENT_DIR/sessions/work" "$PI_CODING_AGENT_DIR/blobs"; printf session >"$PI_CODING_AGENT_DIR/sessions/work/new.jsonl"; printf blob >"$PI_CODING_AGENT_DIR/blobs/new"; sqlite3 "$PI_CODING_AGENT_DIR/agent.db" "insert into values_table values ('ram')" ;;\n  sleep) sleep 2 ;;\n  exit7) exit 7 ;;\nesac\n`,
+		`#!/usr/bin/env bash\nset -eu\ncase "\${1:-}" in\n  show) cat "$PI_CODING_AGENT_DIR/config.yml" ;;\n  mutate) mkdir -p "$PI_CODING_AGENT_DIR/sessions/work" "$PI_CODING_AGENT_DIR/blobs" "$PI_CODING_AGENT_DIR/memories/mnemopi/banks/new"; printf session >"$PI_CODING_AGENT_DIR/sessions/work/new.jsonl"; printf blob >"$PI_CODING_AGENT_DIR/blobs/new"; sqlite3 "$PI_CODING_AGENT_DIR/agent.db" "insert into values_table values ('ram')"; sqlite3 "$PI_CODING_AGENT_DIR/memories/mnemopi/banks/seed/triples.db" "insert into values_table values ('ram')"; sqlite3 "$PI_CODING_AGENT_DIR/memories/mnemopi/banks/new/triples.db" "create table values_table(value text); insert into values_table values ('new')" ;;\n  sleep) sleep 2 ;;\n  exit7) exit 7 ;;\nesac\n`,
 		{ mode: 0o755 },
 	);
 	return { root, persistent, ram, bundle, binary };
@@ -67,6 +67,7 @@ describe("omomp RAM wrapper", () => {
 		expect((await run(f, ["show"])).stdout).toBe("first\n");
 		expect((await run(f, ["show"], { OMOMP_RAM_REFRESH: "1" })).stdout).toBe("second\n");
 		expect((await run(f, ["exit7"])).code).toBe(7);
+		expect((await run(f, ["show"], { OMOMP_RAM_MAX_BYTES: "1" })).stdout).toBe("second\n");
 	});
 
 	test("refuses the size cap before creating a partial profile", async () => {
@@ -86,6 +87,13 @@ describe("omomp RAM wrapper", () => {
 		const db = new Database(path.join(f.persistent, "agent.db"));
 		db.exec("create table values_table(value text); insert into values_table values ('disk')");
 		db.close();
+		const seedDir = path.join(f.persistent, "memories/mnemopi/banks/seed");
+		await fs.mkdir(seedDir, { recursive: true });
+		const seed = new Database(path.join(seedDir, "triples.db"));
+		seed.exec("create table values_table(value text); insert into values_table values ('disk')");
+		seed.close();
+		await fs.writeFile(path.join(f.persistent, "agent.db-wal"), "stale");
+		await fs.writeFile(path.join(f.persistent, "agent.db-shm"), "stale");
 		const result = await run(f, ["mutate"], { OMOMP_RAM_SYNC: "always" });
 		expect(result.code).toBe(0);
 		expect(await fs.readFile(path.join(f.persistent, "sessions/work/new.jsonl"), "utf8")).toBe("session");
@@ -94,5 +102,13 @@ describe("omomp RAM wrapper", () => {
 		const saved = new Database(path.join(f.persistent, "agent.db"), { readonly: true });
 		expect(saved.query("select value from values_table order by rowid").values()).toEqual([["disk"], ["ram"]]);
 		saved.close();
+		const savedSeed = new Database(path.join(seedDir, "triples.db"), { readonly: true });
+		expect(savedSeed.query("select value from values_table order by rowid").values()).toEqual([["disk"], ["ram"]]);
+		savedSeed.close();
+		const savedNew = new Database(path.join(f.persistent, "memories/mnemopi/banks/new/triples.db"), { readonly: true });
+		expect(savedNew.query("select value from values_table").values()).toEqual([["new"]]);
+		savedNew.close();
+		await expect(fs.access(path.join(f.persistent, "agent.db-wal"))).rejects.toThrow();
+		await expect(fs.access(path.join(f.persistent, "agent.db-shm"))).rejects.toThrow();
 	});
 });

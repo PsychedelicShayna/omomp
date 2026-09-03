@@ -11,6 +11,7 @@ import {
 	missingHostTools,
 	nextIncompletePhase,
 	partitionPath,
+	partitionTypeMatches,
 	parseFlashState,
 	PORTABLE_AGENT_MANIFEST,
 	rewriteGrubDefaults,
@@ -41,6 +42,18 @@ describe("flash device policy", () => {
 	test("requires the exact canonical device confirmation", () => {
 		expect(confirmationMatches("/dev/sdc\n", "/dev/sdc")).toBe(true);
 		expect(confirmationMatches("/dev/sdc1", "/dev/sdc")).toBe(false);
+	});
+
+	test("matches the GUID text emitted by sgdisk", () => {
+		expect(
+			partitionTypeMatches(
+				"Partition GUID code: 21686148-6449-6E6F-744E-656564454649 (BIOS boot partition)",
+				1,
+			),
+		).toBe(true);
+		expect(partitionTypeMatches("Partition GUID code: C12A7328-F81F-11D2-BA4B-00A0C93EC93B", 2)).toBe(true);
+		expect(partitionTypeMatches("Partition GUID code: CA7D7CCB-63ED-4C53-861C-1742536059CC", 3)).toBe(true);
+		expect(partitionTypeMatches("Partition GUID code: C12A7328-F81F-11D2-BA4B-00A0C93EC93B", 1)).toBe(false);
 	});
 
 	test("reports missing host tools with owning packages", () => {
@@ -125,6 +138,10 @@ describe("portable payload", () => {
 		expect(filter).toContain("+ /sessions/***");
 		expect(filter).toContain("+ /blobs/***");
 		expect(filter).not.toContain("+ /agent.db");
+		expect(filter).toContain("- /*.db");
+		expect(filter).toContain("- /*.db-wal");
+		expect(filter).toContain("- /*.db-shm");
+		expect(filter.indexOf("- /*.db")).toBeLessThan(filter.indexOf("+ /sessions/***"));
 		expect(filter.trimEnd().endsWith("- /***")).toBe(true);
 	});
 
@@ -139,8 +156,13 @@ describe("portable payload", () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "payload-verify-"));
 		temps.push(root);
 		await fs.writeFile(path.join(root, "one"), "value");
+		await fs.chmod(path.join(root, "one"), 0o600);
 		const good = "cd42404d52ad55ccfa9aca4adc828aa5800ad9d385a0671fbcbf724118320619";
 		expect(await verifyPayload(root, [{ path: "one", type: "file", mode: 0o600, sha256: good }])).toEqual([]);
+		await fs.chmod(path.join(root, "one"), 0o644);
+		expect((await verifyPayload(root, [{ path: "one", type: "file", mode: 0o600, sha256: good }])).join(" ")).toContain(
+			"mode mismatch",
+		);
 		expect(await verifyPayload(root, [{ path: "missing", type: "file", mode: 0o600, sha256: good }])).toHaveLength(1);
 	});
 });

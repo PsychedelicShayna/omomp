@@ -103,6 +103,7 @@ filtered_size() {
 		awk '/^[0-9]+$/ { total += $1 } END { printf "%.0f\n", total + 0 }'
 }
 
+if [[ ! -e "$INIT_MARKER" || "${OMOMP_RAM_REFRESH:-0}" == "1" ]]; then
 required_bytes="$(filtered_size "$persistent_agent_dir")"
 for database in agent.db history.db; do
 	if [[ -f "$persistent_agent_dir/$database" ]]; then
@@ -129,6 +130,7 @@ if ((required_bytes > cap)); then
 		"$required_bytes" "$cap" "$shm_available" "$mem_available" "$default_cap" >&2
 	printf 'omomp: run OMOMP_RAM_DISABLE=1 omomp to use persistent storage directly\n' >&2
 	exit 75
+fi
 fi
 
 if [[ ! -e "$INIT_MARKER" || "${OMOMP_RAM_REFRESH:-0}" == "1" ]]; then
@@ -179,14 +181,14 @@ sync_failed=0
 if ((sync_requested)); then
 	printf 'omomp: synchronizing bounded RAM state to %s\n' "$persistent_agent_dir" >&2
 	mkdir -p -- "$persistent_agent_dir"
-	if ! rsync -a --filter="merge $FILTER_FILE" -- "$RAM_AGENT/" "$persistent_agent_dir/"; then
+	if ! rsync -ac --filter="merge $FILTER_FILE" -- "$RAM_AGENT/" "$persistent_agent_dir/"; then
 		sync_failed=1
 	fi
 	for database in agent.db history.db; do
 		if [[ -f "$RAM_AGENT/$database" ]]; then
 			staging="$persistent_agent_dir/.$database.new-$$"
 			if sqlite_backup "$RAM_AGENT/$database" "$staging" && mv -f -- "$staging" "$persistent_agent_dir/$database"; then
-				:
+				rm -f -- "$persistent_agent_dir/$database-wal" "$persistent_agent_dir/$database-shm"
 			else
 				rm -f -- "$staging"
 				sync_failed=1
