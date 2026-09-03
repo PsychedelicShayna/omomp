@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `omomp flash` to build and install an attested x86-64 baseline portable
+  system with encrypted storage, resumable phases, a bounded profile, and
+  explicit tmpfs persistence.
+
 ### Fixed
 
 - Claude marketplace MCP servers now resolve environment placeholders in stdio environment values instead of passing strings such as `${NAME:-}` literally ([#10481](https://github.com/can1357/oh-my-pi/pull/10481) by [@mrexodia](https://github.com/mrexodia)).
