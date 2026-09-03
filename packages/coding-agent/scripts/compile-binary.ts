@@ -16,6 +16,8 @@ export interface CodingAgentCompileOptions {
 	readonly transformersVersion: string;
 	/** Optional cross-compilation runtime target. */
 	readonly target?: Bun.Build.CompileTarget;
+	/** Compile target recorded in the standalone executable for compatibility gates. */
+	readonly compileTarget?: Bun.Build.CompileTarget | "host";
 	/** Optional unmodified Bun executable used as the standalone runtime template. */
 	readonly executablePath?: string;
 	/** Match release builds that minify identifiers while retaining names. */
@@ -40,6 +42,7 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 			external: [...COMPILED_EXTERNAL_DEPENDENCIES],
 			define: {
 				"process.env.PI_COMPILED": JSON.stringify("true"),
+				"process.env.PI_COMPILE_TARGET": JSON.stringify(options.compileTarget ?? options.target ?? "host"),
 				"process.env.PI_TINY_TRANSFORMERS_VERSION": JSON.stringify(options.transformersVersion),
 				"process.env.PI_DOCS_EMBED": JSON.stringify((await buildDocsIndexPayload()).payload),
 			},
