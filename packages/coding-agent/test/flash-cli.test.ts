@@ -6,6 +6,7 @@ import {
 	assessDevice,
 	buildRamFilter,
 	confirmationMatches,
+	copySelected,
 	FLASH_PHASES,
 	forceAsciiSymbolPreset,
 	missingHostTools,
@@ -37,6 +38,8 @@ describe("flash device policy", () => {
 		expect(assessDevice({ ...disk, type: "part" }, true).ok).toBe(false);
 		expect(assessDevice({ ...disk, removable: false }, false).ok).toBe(false);
 		expect(assessDevice({ ...disk, removable: false }, true)).toEqual({ ok: true });
+		expect(assessDevice({ ...disk, type: "loop", removable: false }, true)).toEqual({ ok: true });
+		expect(assessDevice({ ...disk, unsafeUsers: ["/dev/sdc1 mounted at /mnt"] }, true).ok).toBe(false);
 	});
 
 	test("requires the exact canonical device confirmation", () => {
@@ -56,6 +59,24 @@ describe("flash device policy", () => {
 		expect(partitionTypeMatches("Partition GUID code: C12A7328-F81F-11D2-BA4B-00A0C93EC93B", 1)).toBe(false);
 	});
 
+
+	test("skips special files and dereferences portable symlinks", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "portable-copy-"));
+		temps.push(root);
+		const source = path.join(root, "source");
+		const destination = path.join(root, "destination");
+		await fs.mkdir(source);
+		await fs.writeFile(path.join(root, "target"), "portable");
+		await fs.symlink(path.join(root, "target"), path.join(source, "extension"));
+		const fifo = path.join(source, "agent.sock");
+		const mkfifo = Bun.spawn(["mkfifo", fifo], { stdout: "ignore", stderr: "pipe" });
+		expect(await mkfifo.exited).toBe(0);
+		const skipped: string[] = [];
+		await copySelected(source, destination, skipped);
+		expect(await fs.readFile(path.join(destination, "extension"), "utf8")).toBe("portable");
+		expect(skipped.join(" ")).toContain("agent.sock (special file)");
+		await expect(fs.access(path.join(destination, "agent.sock"))).rejects.toThrow();
+	});
 	test("reports missing host tools with owning packages", () => {
 		const missing = missingHostTools(tool => (tool === "pacstrap" || tool === "sgdisk" ? null : "/bin/x"));
 		expect(missing.map(([tool]) => tool).sort()).toEqual(["pacstrap", "sgdisk"]);

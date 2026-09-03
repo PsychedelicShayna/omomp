@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 
 set -euo pipefail
+if [[ -n "${OMOMP_TMUX_ENV_FILE:-}" ]]; then
+	# Restore the caller's complete exported environment rather than inheriting
+	# stale values from a pre-existing tmux server.
+	source "$OMOMP_TMUX_ENV_FILE"
+	rm -f -- "$OMOMP_TMUX_ENV_FILE"
+	unset OMOMP_TMUX_ENV_FILE
+fi
+
 
 readonly REAL_OMOMP="${OMOMP_REAL_BINARY:-/usr/local/libexec/omomp-portable}"
 readonly PORTABLE_BUNDLE="${OMOMP_PORTABLE_BUNDLE:-/usr/local/lib/omomp-portable}"
@@ -61,20 +69,12 @@ if ((interactive)) && [[ -z "${TMUX:-}" && -z "${OMOMP_TMUX_BOOTSTRAPPED:-}" ]];
 	fi
 	flock -u 8
 	exec 8>&-
-	tmux_env=(
-		env
-		"OMOMP_TMUX_BOOTSTRAPPED=1"
-		"OMOMP_REAL_BINARY=$REAL_OMOMP"
-		"OMOMP_PORTABLE_BUNDLE=$PORTABLE_BUNDLE"
-		"OMOMP_RAM_FILTER=$FILTER_FILE"
-		"OMOMP_RAM_SYNC=$SYNC_POLICY"
-	)
-	for env_name in OMOMP_RAM_ROOT OMOMP_RAM_DISABLE OMOMP_RAM_REFRESH OMOMP_RAM_MAX_BYTES PI_CODING_AGENT_DIR PI_CONFIG_DIR OMP_PROFILE PI_PROFILE; do
-		if [[ -n "${!env_name-}" ]]; then
-			tmux_env+=("$env_name=${!env_name}")
-		fi
-	done
-	exec tmux new-session -s "omomp-${UID}-$$" -- "${tmux_env[@]}" "$0" "$@"
+	env_file="$RAM_PROFILE/.tmux-env-$$"
+	export -p >"$env_file"
+	exec tmux new-session -s "omomp-${UID}-$$" -- env \
+		OMOMP_TMUX_BOOTSTRAPPED=1 \
+		OMOMP_TMUX_ENV_FILE="$env_file" \
+		"$0" "$@"
 fi
 
 exec 9>"$LOCK_FILE"
@@ -147,6 +147,7 @@ if [[ ! -e "$INIT_MARKER" || "${OMOMP_RAM_REFRESH:-0}" == "1" ]]; then
 		done
 	fi
 	install -m 0700 -- "$REAL_OMOMP" "$stage/bin/omomp"
+	rm -f -- "$INIT_MARKER"
 	rm -rf -- "$RAM_AGENT" "$(dirname -- "$RAM_BIN")"
 	mv -- "$stage/agent" "$RAM_AGENT"
 	mv -- "$stage/bin" "$(dirname -- "$RAM_BIN")"
@@ -187,8 +188,9 @@ if ((sync_requested)); then
 	for database in agent.db history.db; do
 		if [[ -f "$RAM_AGENT/$database" ]]; then
 			staging="$persistent_agent_dir/.$database.new-$$"
-			if sqlite_backup "$RAM_AGENT/$database" "$staging" && mv -f -- "$staging" "$persistent_agent_dir/$database"; then
+			if sqlite_backup "$RAM_AGENT/$database" "$staging"; then
 				rm -f -- "$persistent_agent_dir/$database-wal" "$persistent_agent_dir/$database-shm"
+				mv -f -- "$staging" "$persistent_agent_dir/$database"
 			else
 				rm -f -- "$staging"
 				sync_failed=1

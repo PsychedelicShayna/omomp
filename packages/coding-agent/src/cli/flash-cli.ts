@@ -18,6 +18,7 @@ export interface DeviceInfo {
 	readonly removable: boolean;
 	readonly sizeBytes: number;
 	readonly model: string;
+	readonly unsafeUsers?: readonly string[];
 }
 
 export const FLASH_PHASES = [
@@ -171,7 +172,12 @@ export function partitionPath(device: string, index: number): string {
 }
 
 export function assessDevice(info: DeviceInfo, force: boolean): { ok: true } | { ok: false; reason: string } {
-	if (info.type !== "disk") return { ok: false, reason: `${info.path} is a ${info.type}, not a whole disk` };
+	if (info.type !== "disk" && !(force && info.type === "loop")) {
+		return { ok: false, reason: `${info.path} is a ${info.type}, not a whole disk` };
+	}
+	if (info.unsafeUsers && info.unsafeUsers.length > 0) {
+		return { ok: false, reason: `${info.path} has active mounts or holders: ${info.unsafeUsers.join(", ")}` };
+	}
 	if (!info.removable && !force) {
 		return { ok: false, reason: `${info.path} reports as non-removable; refusing without --force` };
 	}
@@ -336,15 +342,36 @@ async function runQuiet(argv: readonly string[]): Promise<number> {
 }
 
 async function inspectDevice(device: string): Promise<DeviceInfo> {
-	const raw = await capture(["lsblk", "--json", "--bytes", "--nodeps", "--output", "NAME,TYPE,RM,SIZE,MODEL,PATH", device]);
-	const row = (JSON.parse(raw) as { blockdevices?: Record<string, unknown>[] }).blockdevices?.[0];
+	type LsblkRow = {
+		path?: unknown;
+		type?: unknown;
+		rm?: unknown;
+		size?: unknown;
+		model?: unknown;
+		mountpoints?: unknown;
+		children?: LsblkRow[];
+	};
+	const raw = await capture(["lsblk", "--json", "--bytes", "--output", "NAME,TYPE,RM,SIZE,MODEL,PATH,MOUNTPOINTS", device]);
+	const row = (JSON.parse(raw) as { blockdevices?: LsblkRow[] }).blockdevices?.[0];
 	if (!row) throw new FlashError(`lsblk returned nothing for ${device}`);
+	const unsafeUsers: string[] = [];
+	const inspectChildren = (children: readonly LsblkRow[] | undefined, depth: number): void => {
+		for (const child of children ?? []) {
+			const childPath = typeof child.path === "string" ? child.path : "(unknown)";
+			const mounts = Array.isArray(child.mountpoints) ? child.mountpoints.filter(Boolean).map(String) : [];
+			if (mounts.length > 0) unsafeUsers.push(`${childPath} mounted at ${mounts.join(",")}`);
+			if (depth > 0 && child.type !== "part") unsafeUsers.push(`${childPath} holder (${String(child.type)})`);
+			inspectChildren(child.children, depth + 1);
+		}
+	};
+	inspectChildren(row.children, 0);
 	return {
 		path: typeof row.path === "string" ? row.path : device,
 		type: String(row.type),
 		removable: row.rm === true || row.rm === 1,
 		sizeBytes: Number(row.size),
 		model: typeof row.model === "string" && row.model.trim() ? row.model.trim() : "(unknown model)",
+		unsafeUsers,
 	};
 }
 
@@ -385,22 +412,45 @@ interface StagedPayload {
 	readonly warnings: readonly string[];
 }
 
-async function copySelected(source: string, destination: string): Promise<void> {
+export async function copySelected(
+	source: string,
+	destination: string,
+	skipped: string[] = [],
+	seen: Set<string> = new Set(),
+): Promise<void> {
 	const stat = await fs.lstat(source);
 	await fs.mkdir(path.dirname(destination), { recursive: true });
 	if (stat.isSymbolicLink()) {
-		await fs.symlink(await fs.readlink(source), destination);
+		let target: string;
+		try {
+			target = await fs.realpath(source);
+		} catch {
+			skipped.push(`${source} (dangling symlink)`);
+			return;
+		}
+		await copySelected(target, destination, skipped, seen);
 		return;
 	}
 	if (stat.isDirectory()) {
+		const real = await fs.realpath(source);
+		if (seen.has(real)) {
+			skipped.push(`${source} (symlink cycle)`);
+			return;
+		}
+		seen.add(real);
 		await fs.mkdir(destination, { recursive: true, mode: stat.mode & 0o777 });
 		for (const dirent of await fs.readdir(source, { withFileTypes: true })) {
 			if (dirent.name.endsWith("-wal") || dirent.name.endsWith("-shm")) continue;
 			const childSource = path.join(source, dirent.name);
 			const childDestination = path.join(destination, dirent.name);
 			if (dirent.isFile() && dirent.name.endsWith(".db")) await snapshotDatabase(childSource, childDestination);
-			else await copySelected(childSource, childDestination);
+			else await copySelected(childSource, childDestination, skipped, seen);
 		}
+		seen.delete(real);
+		return;
+	}
+	if (!stat.isFile()) {
+		skipped.push(`${source} (special file)`);
 		return;
 	}
 	await fs.copyFile(source, destination);
@@ -465,11 +515,11 @@ async function stagePayload(user: PayloadUser): Promise<StagedPayload> {
 				continue;
 			}
 			if (entry.database) await snapshotDatabase(source, destination);
-			else await copySelected(source, destination);
+			else await copySelected(source, destination, skipped);
 		}
 
 		const sourceSsh = path.join(user.home, ".ssh");
-		if (await exists(sourceSsh)) await copySelected(sourceSsh, path.join(stagedHome, ".ssh"));
+		if (await exists(sourceSsh)) await copySelected(sourceSsh, path.join(stagedHome, ".ssh"), skipped);
 		else skipped.push("~/.ssh");
 
 		const agentDir = path.join(stagedHome, ".omp", "agent");
@@ -828,7 +878,7 @@ async function verifyPhase(phase: FlashPhase, target: MountedTarget, device: Dev
 	} else if (phase === "system-configured") {
 		if (!(await fs.readFile(path.join(target.root, "etc/mkinitcpio.conf"), "utf8")).includes(STICK_HOOKS)) fail("HOOKS differ");
 		if (!(await exists(path.join(target.boot, "initramfs-linux.img")))) fail("initramfs-linux.img is missing");
-		const locales = await run(["arch-chroot", target.root, "localedef", "--list-archive"]);
+		const locales = await run(["arch-chroot", target.root, "localedef", "--list-archive"], { capture: true });
 		if (!locales.ok || !locales.stdout.toLowerCase().split(/\s+/).includes("en_us.utf8")) fail("en_US.UTF-8 locale is missing");
 		for (const service of ["NetworkManager", "systemd-timesyncd"]) {
 			if (!(await run(["arch-chroot", target.root, "systemctl", "is-enabled", service])).ok) fail(`${service} is disabled`);
@@ -965,7 +1015,9 @@ async function flash(cmd: FlashCommandArgs): Promise<void> {
 	}
 	if (cmd.flags.resume && !previousState) throw new FlashError("--resume requested, but no readable OMOMP flash state exists");
 	if (!(await exists(bundle.wrapperPath))) throw new FlashError(`RAM wrapper is missing from this build: ${bundle.wrapperPath}`);
-	const payload = await stagePayload(user);
+	const payload = await stagePayload(user).catch(error => {
+		throw error instanceof FlashError ? error : new FlashError(`Cannot stage portable payload: ${String(error)}`);
+	});
 	const teardown: Teardown = { mounts: [], payloadRoot: payload.root };
 	try {
 		if (payload.skipped.length > 0) {
@@ -1001,6 +1053,9 @@ async function flash(cmd: FlashCommandArgs): Promise<void> {
 		await unwind(teardown);
 	}
 	process.stderr.write(`\n${chalk.green("Done.")} ${device.path} is complete and safe to unplug. Boot, unlock, then run omp.\n`);
+	if (payload.skipped.length > 0) {
+		process.stderr.write(`Skipped optional payload entries: ${payload.skipped.join(", ")}\n`);
+	}
 }
 
 export async function runFlashCommand(cmd: FlashCommandArgs): Promise<number> {
@@ -1008,10 +1063,8 @@ export async function runFlashCommand(cmd: FlashCommandArgs): Promise<number> {
 		await flash(cmd);
 		return 0;
 	} catch (error) {
-		if (error instanceof FlashError || error instanceof PortableBundleError) {
-			process.stderr.write(`${chalk.red("flash:")} ${error.message}\n`);
-			return 1;
-		}
-		throw error;
+		const message = error instanceof Error ? error.message : String(error);
+		process.stderr.write(`${chalk.red("flash:")} ${message}\n`);
+		return 1;
 	}
 }
