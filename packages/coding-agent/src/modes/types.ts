@@ -424,6 +424,11 @@ export interface InteractiveModeContext {
 	handleRenameCommand(title: string): Promise<void>;
 	handleMemoryCommand(text: string): Promise<void>;
 	handleSTTToggle(): Promise<void>;
+	/** Space-hold push-to-talk edges: explicit start/stop rather than a blind toggle, so a hold
+	 *  recognized during a chord-started capture can't finalize it early. */
+	handleSTTHold(phase: "start" | "end"): Promise<void>;
+	/** True when no speech capture is in flight; gates the space-hold gesture. */
+	readonly sttIdle: boolean;
 	/** Start or stop the Codex-backed realtime voice session. */
 	handleLiveCommand(): Promise<void>;
 	executeCompaction(

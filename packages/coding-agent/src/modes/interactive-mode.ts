@@ -5465,28 +5465,37 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#commandController.handleMemoryCommand(text);
 	}
 
-	async handleSTTToggle(): Promise<void> {
+	/** True when no speech capture is in flight. The space-hold push-to-talk gesture is gated on
+	 *  this so a hold can never engage on top of a capture the `app.stt.toggle` chord started. */
+	get sttIdle(): boolean {
+		return this.#sttController === undefined || this.#sttController.state === "idle";
+	}
+
+	/** Resolve the STT controller, refusing when speech input is unavailable in this state. */
+	#prepareSTT(): STTController | undefined {
 		if (this.#liveCommandController.active) {
 			this.showWarning("End live mode before using speech-to-text input.");
-			return;
+			return undefined;
 		}
 		if (!settings.get("stt.enabled")) {
 			this.showWarning("Speech-to-text is disabled. Enable it in settings: stt.enabled");
-			return;
+			return undefined;
 		}
-		if (!this.#sttController) {
-			this.#sttController = new STTController(undefined, (audio, options) =>
-				transcribeXaiAudio({
-					modelRegistry: this.session.modelRegistry,
-					sessionId: this.session.sessionId,
-					audio,
-					filename: options.filename,
-					language: options.language,
-					signal: options.signal,
-				}),
-			);
-		}
-		await this.#sttController.toggle(this.editor, {
+		this.#sttController ??= new STTController(undefined, (audio, options) =>
+			transcribeXaiAudio({
+				modelRegistry: this.session.modelRegistry,
+				sessionId: this.session.sessionId,
+				audio,
+				filename: options.filename,
+				language: options.language,
+				signal: options.signal,
+			}),
+		);
+		return this.#sttController;
+	}
+
+	#sttOptions() {
+		return {
 			showWarning: (msg: string) => this.showWarning(msg),
 			showStatus: (msg: string) => this.showStatus(msg),
 			requestRender: () => this.ui.requestRender(),
@@ -5508,7 +5517,24 @@ export class InteractiveMode implements InteractiveModeContext {
 				}
 				this.ui.requestRender();
 			},
-		});
+		};
+	}
+
+	async handleSTTToggle(): Promise<void> {
+		await this.#prepareSTT()?.toggle(this.editor, this.#sttOptions());
+	}
+
+	/** Space-hold push-to-talk edges. Distinct from {@link handleSTTToggle}: the gesture has an
+	 *  explicit start and release, so it starts a capture only from idle and stops only the one it
+	 *  started. Toggling here would let a hold recognized during a chord-started recording finalize
+	 *  that recording early and hand its audio to the wrong route (issue: holding `Ctrl`+`Space` a
+	 *  beat too long cancels an in-progress dictation). */
+	async handleSTTHold(phase: "start" | "end"): Promise<void> {
+		const controller = this.#prepareSTT();
+		if (!controller) return;
+		const options = this.#sttOptions();
+		if (phase === "start") await controller.holdStart(this.editor, options);
+		else await controller.holdEnd(this.editor, options);
 	}
 
 	/** Start or stop the Codex-backed realtime voice surface. */
