@@ -1,12 +1,10 @@
 import type { Agent } from "@oh-my-pi/pi-agent-core";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
-import { jsBackend, juliaBackend, pythonBackend, rubyBackend } from "../eval";
+import { jsBackend, pythonBackend } from "../eval";
 import type { ExecutorBackend, ExecutorBackendResult } from "../eval/backend";
-import { disposeJuliaKernelSessionsByOwner } from "../eval/jl/executor";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
-import { disposeRubyKernelSessionsByOwner } from "../eval/rb/executor";
 import { defaultEvalSessionId } from "../eval/session-id";
 import type { ExtensionRunner } from "../extensibility/extensions";
 import type { ToolSession } from "../tools";
@@ -113,10 +111,6 @@ export class EvalRunner {
 			python: pythonBackend,
 			js: jsBackend,
 			javascript: jsBackend,
-			rb: rubyBackend,
-			ruby: rubyBackend,
-			jl: juliaBackend,
-			julia: juliaBackend,
 		};
 		const backend =
 			builtin[token] ??
@@ -205,8 +199,6 @@ export class EvalRunner {
 		if (!settled) logger.warn("Detaching retained eval-kernel ownership while eval execution is still active");
 		const results = await Promise.allSettled([
 			disposeKernelSessionsByOwner(this.#kernelOwnerId),
-			disposeRubyKernelSessionsByOwner(this.#kernelOwnerId),
-			disposeJuliaKernelSessionsByOwner(this.#kernelOwnerId),
 			disposeVmContextsByOwner(this.#kernelOwnerId),
 			evalBackendRegistry(this.#host.sessionManager).dispose(),
 		]);
@@ -220,7 +212,7 @@ export class EvalRunner {
 			const remaining = deadline - Date.now();
 			if (remaining <= 0) return false;
 			const settled = await Promise.race([
-				Promise.allSettled([...this.#activeExecutions]).then(() => true),
+				Promise.allSettled(this.#activeExecutions).then(() => true),
 				Bun.sleep(remaining).then(() => false),
 			]);
 			if (!settled && this.#activeExecutions.size) return false;

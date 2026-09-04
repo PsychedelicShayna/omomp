@@ -28,6 +28,10 @@ process.env.PCRE2_SYS_STATIC ??= "1";
 // "cmake not found". Resolve the VS install via vswhere and append its
 // CMake/Ninja dirs, keeping any user-provided tools ahead.
 if (process.platform === "win32" && (!Bun.which("cmake") || !Bun.which("ninja"))) {
+	const vcToolsComponent =
+		process.arch === "arm64"
+			? "Microsoft.VisualStudio.Component.VC.Tools.ARM64"
+			: "Microsoft.VisualStudio.Component.VC.Tools.x86.x64";
 	const vswhere = path.join(
 		process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)",
 		"Microsoft Visual Studio",
@@ -35,16 +39,7 @@ if (process.platform === "win32" && (!Bun.which("cmake") || !Bun.which("ninja"))
 		"vswhere.exe",
 	);
 	const probe = Bun.spawnSync(
-		[
-			vswhere,
-			"-latest",
-			"-products",
-			"*",
-			"-requires",
-			"Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-			"-property",
-			"installationPath",
-		],
+		[vswhere, "-latest", "-products", "*", "-requires", vcToolsComponent, "-property", "installationPath"],
 		{ stdout: "pipe", stderr: "pipe" },
 	);
 	const vsRoot = probe.exitCode === 0 ? probe.stdout.toString("utf-8").trim() : "";
@@ -79,21 +74,26 @@ const localAddon = resolveLocalHostAddon({
 const effectiveVariant = localAddon.x64Variant;
 const variantSuffix = effectiveVariant ? `-${effectiveVariant}` : "";
 
-// Pin Rust target-cpu so x64 baseline/modern variants get a reproducible ISA floor
-// instead of inheriting the host CPU when RUSTFLAGS is unset. Non-x64 builds keep
-// the target's default CPU features: `-C target-cpu=native` would bake the build
-// host's CPU features into the addon and trips ring 0.17's aarch64-apple
-// const assertion (CAPS_STATIC == MIN_STATIC_FEATURES).
-if (effectiveVariant) {
-	const expectedTargetCpu = effectiveVariant === "modern" ? "x86-64-v3" : "x86-64-v2";
-	const configuredTargetCpu = Bun.env.RUSTFLAGS?.match(/(?:^|\s)-C\s*target-cpu=([^\s]+)/)?.[1];
-	if (requestedVariant && configuredTargetCpu && configuredTargetCpu !== expectedTargetCpu) {
-		throw new Error(
-			`OMP_NATIVE_X64_VARIANT=${requestedVariant} requires target-cpu=${expectedTargetCpu}, ` +
-				`but RUSTFLAGS selects target-cpu=${configuredTargetCpu}`,
-		);
-	}
-	if (!Bun.env.RUSTFLAGS) Bun.env.RUSTFLAGS = `-C target-cpu=${expectedTargetCpu}`;
+// Pin Rust target-cpu so x64 baseline/modern variants get a reproducible ISA
+// floor instead of inheriting the host CPU when RUSTFLAGS is unset. Shipping
+// Windows addons also links the MSVC CRT statically so clean systems need no
+// VC++ Redistributable. Non-x64 builds otherwise keep the target's defaults:
+// target-cpu=native would bake in the build host and trips ring 0.17's
+// aarch64-apple const assertion (CAPS_STATIC == MIN_STATIC_FEATURES).
+const expectedTargetCpu =
+	effectiveVariant === "modern" ? "x86-64-v3" : effectiveVariant === "baseline" ? "x86-64-v2" : undefined;
+const configuredTargetCpu = Bun.env.RUSTFLAGS?.match(/(?:^|\s)-C\s*target-cpu=([^\s]+)/)?.[1];
+if (requestedVariant && configuredTargetCpu && configuredTargetCpu !== expectedTargetCpu) {
+	throw new Error(
+		`OMP_NATIVE_X64_VARIANT=${requestedVariant} requires target-cpu=${expectedTargetCpu}, ` +
+			`but RUSTFLAGS selects target-cpu=${configuredTargetCpu}`,
+	);
+}
+if (!Bun.env.RUSTFLAGS) {
+	const rustFlags: string[] = [];
+	if (process.platform === "win32") rustFlags.push("-C", "target-feature=+crt-static");
+	if (expectedTargetCpu) rustFlags.push("-C", `target-cpu=${expectedTargetCpu}`);
+	if (rustFlags.length > 0) Bun.env.RUSTFLAGS = rustFlags.join(" ");
 }
 
 async function cleanupStaleTemps(dir: string): Promise<void> {

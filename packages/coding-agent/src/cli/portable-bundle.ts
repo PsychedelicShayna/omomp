@@ -81,14 +81,18 @@ export async function resolvePortableBundleDirectory(
 	env: NodeJS.ProcessEnv = process.env,
 	execPath: string = process.execPath,
 ): Promise<string> {
-	return env.OMOMP_PORTABLE_BUNDLE ? path.resolve(env.OMOMP_PORTABLE_BUNDLE) : path.dirname(await fs.realpath(execPath));
+	return env.OMOMP_PORTABLE_BUNDLE
+		? path.resolve(env.OMOMP_PORTABLE_BUNDLE)
+		: path.dirname(await fs.realpath(execPath));
 }
 
-export async function validatePortableBundle(options: {
-	readonly env?: NodeJS.ProcessEnv;
-	readonly execPath?: string;
-	readonly compileTarget?: string;
-} = {}): Promise<PortableBundle> {
+export async function validatePortableBundle(
+	options: {
+		readonly env?: NodeJS.ProcessEnv;
+		readonly execPath?: string;
+		readonly compileTarget?: string;
+	} = {},
+): Promise<PortableBundle> {
 	const env = options.env ?? process.env;
 	const execPath = options.execPath ?? process.execPath;
 	const compileTarget = options.compileTarget ?? process.env.PI_COMPILE_TARGET;

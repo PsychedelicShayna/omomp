@@ -70,6 +70,8 @@ export interface ChatTranscriptBuilderDeps {
 	cwd: string;
 	hideThinkingBlock?: () => boolean;
 	proseOnlyThinking?: () => boolean;
+	/** Session-scoped resolved destinations for model-authored Markdown links. */
+	linkTargets?: ReadonlyMap<string, string>;
 	requestRender: () => void;
 }
 
@@ -321,7 +323,11 @@ export class ChatTranscriptBuilder {
 					message.excludeFromContext ?? false,
 				);
 				if (message.output) component.appendOutput(message.output);
-				component.setComplete(message.exitCode, message.cancelled, { truncation: message.meta?.truncation });
+				component.setComplete(message.exitCode, message.cancelled, {
+					truncation: message.meta?.truncation,
+					images: message.images,
+					showImages: settings.get("terminal.showImages"),
+				});
 				this.container.addChild(component);
 				break;
 			}
@@ -390,10 +396,12 @@ export class ChatTranscriptBuilder {
 			this.deps.getMessageRenderer ? undefined : [], // placeholder for thinkingRenderers
 			this.deps.ui.imageBudget,
 			proseOnlyThinking,
+			this.deps.linkTargets,
 		);
 		assistantComponent.setImagesVisible(settings.get("terminal.showImages"));
 		assistantComponent.setToolResultImagesVisible(!settings.get("display.hideToolActivity"));
 		this.#trackExpandable(assistantComponent);
+		assistantComponent.pickReactionTarget(this.container.children);
 		this.container.addChild(assistantComponent);
 
 		if (settings.get("display.cacheMissMarker")) {
@@ -423,6 +431,7 @@ export class ChatTranscriptBuilder {
 				this.deps.getMessageRenderer ? undefined : [],
 				undefined,
 				proseOnlyThinking,
+				this.deps.linkTargets,
 			);
 			component.setImagesVisible(settings.get("terminal.showImages"));
 			component.setToolResultImagesVisible(!settings.get("display.hideToolActivity"));
@@ -466,8 +475,6 @@ export class ChatTranscriptBuilder {
 					// Stable ids and Kitty placeholder cells keep images anchored
 					// while the transcript viewport scrolls and reflows.
 					showImages: settings.get("terminal.showImages"),
-					editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
-					editAllowFuzzy: settings.get("edit.fuzzyMatch"),
 				},
 				this.deps.getTool?.(content.name),
 				this.deps.ui,
@@ -559,7 +566,8 @@ export class ChatTranscriptBuilder {
 		if (
 			message.customType === "irc:incoming" ||
 			message.customType === "irc:autoreply" ||
-			message.customType === "irc:relay"
+			message.customType === "irc:relay" ||
+			message.customType === "irc:workpool"
 		) {
 			this.container.addChild(buildIrcMessageCard(message, () => this.#expanded));
 			return;

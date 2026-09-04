@@ -22,8 +22,9 @@
  * (packages/natives/scripts/build-bindings.ts) by default — no bazel needed
  * for plain host iteration. Bazel is opt-in for host via
  * `OMP_NATIVE_BUILD_BACKEND=bazel` or by passing extra bazel args after `--`;
- * explicit //:natives-* targets and aggregates always build through bazel
- * (the CI path, which runs bazelisk).
+ * explicit //:natives-* targets and aggregates always build through bazel.
+ * Release CI uses that path except for Windows ARM64, which builds `host`
+ * natively on its GitHub-hosted runner.
  *
  * Windows hosts: the msvc cc toolchain in bazel/toolchains/msvc only supports
  * linux/mac exec hosts (its clang-cl+xwin wrappers replace the MSVC a Windows
@@ -246,7 +247,9 @@ async function main(): Promise<void> {
 	const options = parseCliArgs(process.argv.slice(2));
 	const requestedVariant = Bun.env.OMP_NATIVE_X64_VARIANT?.trim();
 	if (requestedVariant && requestedVariant !== "baseline" && requestedVariant !== "modern") {
-		throw new Error(`OMP_NATIVE_X64_VARIANT must be "baseline" or "modern" (got ${JSON.stringify(requestedVariant)})`);
+		throw new Error(
+			`OMP_NATIVE_X64_VARIANT must be "baseline" or "modern" (got ${JSON.stringify(requestedVariant)})`,
+		);
 	}
 	if (requestedVariant && process.arch !== "x64") {
 		throw new Error(`OMP_NATIVE_X64_VARIANT is only valid on x64 hosts (got ${process.arch})`);

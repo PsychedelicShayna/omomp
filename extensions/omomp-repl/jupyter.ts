@@ -1,4 +1,4 @@
-import type { ExecutorBackendExecOptions, ExecutorBackendResult } from "/home/shayna/omp/packages/coding-agent/src/eval/backend.ts";
+import type { ExecutorBackendResult } from "/home/shayna/omp/packages/coding-agent/src/eval/backend.ts";
 import type { EvalDisplayOutput } from "/home/shayna/omp/packages/coding-agent/src/eval/types.ts";
 import type { ExtensionEvalBackend } from "/home/shayna/omp/packages/coding-agent/src/extensibility/extensions/types.ts";
 

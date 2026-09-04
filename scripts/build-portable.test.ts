@@ -9,7 +9,9 @@ describe("portable native build selection", () => {
 	});
 
 	test("accepts exactly one embedded baseline native", () => {
-		expect(() => assertBaselineEmbedding('{ variant: "baseline", filename: "pi_natives.linux-x64-baseline.node" }')).not.toThrow();
+		expect(() =>
+			assertBaselineEmbedding('{ variant: "baseline", filename: "pi_natives.linux-x64-baseline.node" }'),
+		).not.toThrow();
 		expect(() => assertBaselineEmbedding('{ variant: "modern" }')).toThrow("exactly one embedded baseline native");
 		expect(() => assertBaselineEmbedding('{ variant: "baseline" }, { variant: "modern" }')).toThrow(
 			"exactly one embedded baseline native",

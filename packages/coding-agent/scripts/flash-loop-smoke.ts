@@ -23,7 +23,11 @@ let mountRoot = "";
 
 async function run(argv: string[], stdinData?: string): Promise<string> {
 	process.stderr.write(`$ ${argv.join(" ")}\n`);
-	const child = Bun.spawn(argv, { stdin: stdinData === undefined ? "ignore" : "pipe", stdout: "pipe", stderr: "inherit" });
+	const child = Bun.spawn(argv, {
+		stdin: stdinData === undefined ? "ignore" : "pipe",
+		stdout: "pipe",
+		stderr: "inherit",
+	});
 	if (stdinData !== undefined) {
 		child.stdin?.write(stdinData);
 		child.stdin?.end();
@@ -58,8 +62,10 @@ try {
 	await run(["umount", stateMount]);
 
 	await run([binary, "flash", "--resume", "--force", "--user", username, loop], `${loop}\n${passphrase}\n`);
-	if ((await run(["blkid", "-o", "value", "-s", "UUID", esp])) !== espUuid) throw new Error("ESP UUID changed on resume");
-	if ((await run(["blkid", "-o", "value", "-s", "UUID", luks])) !== luksUuid) throw new Error("LUKS UUID changed on resume");
+	if ((await run(["blkid", "-o", "value", "-s", "UUID", esp])) !== espUuid)
+		throw new Error("ESP UUID changed on resume");
+	if ((await run(["blkid", "-o", "value", "-s", "UUID", luks])) !== luksUuid)
+		throw new Error("LUKS UUID changed on resume");
 
 	mapper = `omomp-loop-${process.pid}`;
 	await run(["cryptsetup", "open", "--key-file=-", luks, mapper], passphrase);
@@ -80,11 +86,16 @@ try {
 		await requireFile(relative);
 	}
 	const hooks = await fs.readFile(path.join(mountRoot, "etc/mkinitcpio.conf"), "utf8");
-	if (!hooks.includes("HOOKS=(base udev autodetect microcode modconf kms keyboard keymap consolefont block encrypt filesystems fsck)")) {
+	if (
+		!hooks.includes(
+			"HOOKS=(base udev autodetect microcode modconf kms keyboard keymap consolefont block encrypt filesystems fsck)",
+		)
+	) {
 		throw new Error("mkinitcpio HOOKS differ from the pinned set");
 	}
 	const grub = await fs.readFile(path.join(mountRoot, "boot/grub/grub.cfg"), "utf8");
-	if (!grub.includes(`cryptdevice=UUID=${luksUuid}:omproot`)) throw new Error("GRUB lacks the recorded cryptdevice UUID");
+	if (!grub.includes(`cryptdevice=UUID=${luksUuid}:omproot`))
+		throw new Error("GRUB lacks the recorded cryptdevice UUID");
 	for (const command of ["sqlite3", "rsync", "flock", "tmux", "realpath", "sha256sum"]) {
 		await requireFile(`usr/bin/${command}`);
 	}

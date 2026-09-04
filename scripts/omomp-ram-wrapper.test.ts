@@ -105,7 +105,9 @@ describe("omomp RAM wrapper", () => {
 		const savedSeed = new Database(path.join(seedDir, "triples.db"), { readonly: true });
 		expect(savedSeed.query("select value from values_table order by rowid").values()).toEqual([["disk"], ["ram"]]);
 		savedSeed.close();
-		const savedNew = new Database(path.join(f.persistent, "memories/mnemopi/banks/new/triples.db"), { readonly: true });
+		const savedNew = new Database(path.join(f.persistent, "memories/mnemopi/banks/new/triples.db"), {
+			readonly: true,
+		});
 		expect(savedNew.query("select value from values_table").values()).toEqual([["new"]]);
 		savedNew.close();
 		await expect(fs.access(path.join(f.persistent, "agent.db-wal"))).rejects.toThrow();

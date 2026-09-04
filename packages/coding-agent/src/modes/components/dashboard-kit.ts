@@ -358,7 +358,7 @@ export function renderDashboardDetailShell<Row extends { id: string }>(
 	const renderWidth = Math.max(1, width);
 	if (options.row === null) return [dashboardText(options.emptyText ?? "No item selected", renderWidth)];
 	const detail = options.renderDetail(options.row, renderWidth);
-	const rendered = new Array<string>(detail.length);
+	const rendered = Array.from<string>({ length: detail.length });
 	for (let index = 0; index < detail.length; index++) {
 		rendered[index] = dashboardText(detail[index]!, renderWidth);
 	}

@@ -36,7 +36,7 @@ describe("parseReplEvalInput", () => {
 	});
 
 	it("leaves ambiguous dollar-prefixed chat untouched", () => {
-		for (const input of ["$print(1)", "$$", "$1", "${name}", "$p", "$unknown code"]) {
+		for (const input of ["$print(1)", "$$", "$1", "$" + "{name}", "$p", "$unknown code"]) {
 			expect(parseReplEvalInput(input)).toBeUndefined();
 		}
 		expect(parseReplEvalInput("$ cd ~/project && make")).toBeUndefined();

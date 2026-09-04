@@ -8,10 +8,11 @@ import {
 	raceJobSettlement,
 	resolveAutoBackgroundWaitMs,
 } from "../async";
-import { jsBackend, juliaBackend, pythonBackend, rubyBackend } from "../eval";
+import { jsBackend, pythonBackend } from "../eval";
 import type { ExecutorBackend, ExecutorBackendResult } from "../eval/backend";
 import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP } from "../eval/bridge-timeout";
 import { IdleTimeout } from "../eval/idle-timeout";
+import { getEnabledEvalPreludes } from "../eval/preludes";
 import { type BackendProbeOptions, DEFAULT_PROBE_TIMEOUT_MS } from "../eval/probe";
 import { defaultEvalSessionId } from "../eval/session-id";
 import type { EvalCellResult, EvalDisplayOutput, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
@@ -19,6 +20,7 @@ import evalDescription from "../prompts/tools/eval.md" with { type: "text" };
 import evalCodeModeDescription from "../prompts/tools/eval-code-mode.md" with { type: "text" };
 import { extensionBackendAdapter, registryForToolSession } from "../session/eval-service";
 import { DEFAULT_MAX_BYTES, OutputSink, type OutputSummary, TailBuffer } from "../session/streaming-output";
+import { sessionDelegationBias } from "../task/prompt-policy";
 import { resolveSpawnPolicy } from "../task/spawn-policy";
 import { webpExclusionForModel } from "../utils/image-loading";
 import { formatDimensionNote, resizeImage } from "../utils/image-resize";
@@ -35,19 +37,15 @@ import { clampTimeout } from "./tool-timeouts";
 export { EVAL_DEFAULT_PREVIEW_LINES, evalToolRenderer } from "./eval-render";
 
 /** Language tokens the eval tool accepts, in stable display order. */
-export type EvalLanguageToken = "py" | "js" | "rb" | "jl";
-const EVAL_LANGUAGE_ORDER: readonly EvalLanguageToken[] = ["py", "js", "rb", "jl"];
+export type EvalLanguageToken = "py" | "js";
+const EVAL_LANGUAGE_ORDER: readonly EvalLanguageToken[] = ["py", "js"];
 const EVAL_LANGUAGE_RUNTIME: Record<EvalLanguageToken, string> = {
 	py: '"py" for the IPython kernel',
 	js: '"js" for the persistent JS VM',
-	rb: '"rb" for the persistent Ruby kernel',
-	jl: '"jl" for the persistent Julia kernel',
 };
 const EVAL_LANGUAGE_NAME: Record<EvalLanguageToken, string> = {
 	py: "Python",
 	js: "JavaScript",
-	rb: "Ruby",
-	jl: "Julia",
 };
 
 /** Join names as an English "or" list: ["A"]→"A", ["A","B"]→"A or B", 3+→"A, B, or C". */
@@ -59,16 +57,9 @@ function joinWithOr(items: readonly string[]): string {
 function describeLanguageField(langs: readonly string[]): string {
 	return `runtime: ${langs.map(lang => EVAL_LANGUAGE_RUNTIME[lang as EvalLanguageToken] ?? `"${lang}"`).join(", ")}`;
 }
-function describeCodeField(langs: readonly string[]): string {
-	const replLangs = langs.filter(lang => lang === "rb" || lang === "jl");
-	// No persistent REPL backends → keep the original py/js phrasing verbatim so the
-	// default (rb/jl off) wire schema stays byte-identical to the pre-feature one.
-	if (replLangs.length === 0) return "code to run in this eval call, verbatim. Use top-level await freely.";
-	const awaitLangs = langs.filter(lang => lang === "py" || lang === "js");
-	const clauses: string[] = [];
-	if (awaitLangs.length > 0) clauses.push(`Top-level \`await\` is available in ${awaitLangs.join("/")}`);
-	clauses.push(`${replLangs.join("/")} auto-display the last expression like a REPL`);
-	return `code to run in this eval call, verbatim. ${clauses.join("; ")}.`;
+
+function describeCodeField(_langs: readonly string[]): string {
+	return "code to run in this eval call, verbatim. Use top-level await freely.";
 }
 
 function summarizeEvalLanguages(langs: readonly string[], session?: ToolSession | null): string {
@@ -76,10 +67,7 @@ function summarizeEvalLanguages(langs: readonly string[], session?: ToolSession 
 	const labels = new Map(registered.map(backend => [backend.id, backend.label]));
 	const names = langs.map(lang => EVAL_LANGUAGE_NAME[lang as EvalLanguageToken] ?? labels.get(lang) ?? lang);
 	const list = names.length > 0 ? joinWithOr(names) : "Python or JavaScript";
-	const backend = langs.some(lang => lang === "rb" || lang === "jl" || labels.has(lang))
-		? "a persistent"
-		: "an in-process";
-	return `Execute ${list} code in ${backend} eval backend`;
+	return `Execute ${list} code in an in-process eval backend`;
 }
 
 /** Resolved-allowance → enabled language tokens, preserving display order. */
@@ -87,8 +75,6 @@ function enabledEvalLanguages(backends: EvalBackendsAllowance): EvalLanguageToke
 	const allowed: Record<EvalLanguageToken, boolean> = {
 		py: backends.python,
 		js: backends.js,
-		rb: backends.ruby,
-		jl: backends.julia,
 	};
 	return EVAL_LANGUAGE_ORDER.filter(lang => allowed[lang]);
 }
@@ -107,7 +93,7 @@ const evalCellCommonFields = {
  * copy per session so disabled backends are never advertised to the model.
  */
 export const evalSchema = type({
-	language: type("'py' | 'js' | 'rb' | 'jl'").describe(describeLanguageField(EVAL_LANGUAGE_ORDER)),
+	language: type("'py' | 'js'").describe(describeLanguageField(EVAL_LANGUAGE_ORDER)),
 	...evalCellCommonFields,
 	code: type("string").describe(describeCodeField(EVAL_LANGUAGE_ORDER)),
 });
@@ -169,8 +155,6 @@ function formatDisplayOutputsForText(outputs: EvalDisplayOutput[]): string {
 export interface EvalToolDescriptionOptions {
 	py?: boolean;
 	js?: boolean;
-	rb?: boolean;
-	jl?: boolean;
 	/**
 	 * Parent spawn policy (`getSessionSpawns`). `true`/omitted means unrestricted,
 	 * `false`/`""` hides `agent()`, and a comma list drives the advertised default.
@@ -178,23 +162,28 @@ export interface EvalToolDescriptionOptions {
 	spawns?: boolean | string | null;
 	/** Advertise auto-backgrounding of long-running cells in the tool prompt. */
 	autoBackgroundEnabled?: boolean;
+	/** Advertise `@tool` / `tool(fn)` and the `tools` spawn option (`eval.tools.enabled`). */
+	evalTools?: boolean;
+	/** Push `workpool()` as the default for independent items (model delegation bias `eager`). Default: true. */
+	eagerDelegation?: boolean;
+	/** Enabled capability documentation appended to the eval-only prompt. */
+	preludeDocumentation?: string;
 }
 
 export function getEvalToolDescription(options: EvalToolDescriptionOptions = {}): string {
 	const py = options.py ?? true;
 	const js = options.js ?? true;
-	const rb = options.rb ?? false;
-	const jl = options.jl ?? false;
 	const spawnPolicy = resolveSpawnPolicy(options.spawns ?? true);
 	return prompt.render(evalDescription, {
 		py,
 		js,
-		rb,
-		jl,
+		evalTools: options.evalTools ?? true,
+		eagerDelegation: options.eagerDelegation ?? true,
 		autoBackgroundEnabled: options.autoBackgroundEnabled ?? false,
 		spawns: spawnPolicy.enabled,
 		spawnDefaultAgent: spawnPolicy.defaultAgent,
 		spawnAllowedAgentsText: spawnPolicy.allowedPromptText,
+		preludeDocumentation: options.preludeDocumentation,
 	});
 }
 
@@ -265,56 +254,19 @@ async function resolveBackend(
 	const backends = resolveEvalBackends(session);
 	const allowPy = backends.python;
 	const allowJs = backends.js;
-	const allowRb = backends.ruby;
-	const allowJl = backends.julia;
 
 	if (language === "python") {
 		if (!allowPy) throw new ToolError("Python backend is disabled (PI_PY=0 or eval.py = false).");
 		const available = await pythonBackend.isAvailable(session, probeOpts);
 		throwIfAborted(probeOpts?.signal);
 		if (!available) {
-			const alternatives = [allowJs ? '"js"' : null, allowRb ? '"rb"' : null, allowJl ? '"jl"' : null].filter(
-				Boolean,
-			);
 			throw new ToolError(
-				alternatives.length > 0
-					? `Python backend is unavailable in this session. Pass language: ${alternatives.join(" or ")} or install the python kernel.`
+				allowJs
+					? 'Python backend is unavailable in this session. Pass language: "js" or install the python kernel.'
 					: 'Python backend is unavailable in this session. Install the python kernel to use language: "py".',
 			);
 		}
 		return { backend: pythonBackend };
-	}
-	if (language === "ruby") {
-		if (!allowRb) throw new ToolError("Ruby backend is disabled (PI_RB=0 or eval.rb = false).");
-		const available = await rubyBackend.isAvailable(session, probeOpts);
-		throwIfAborted(probeOpts?.signal);
-		if (!available) {
-			const alternatives = [allowJs ? '"js"' : null, allowPy ? '"py"' : null, allowJl ? '"jl"' : null].filter(
-				Boolean,
-			);
-			throw new ToolError(
-				alternatives.length > 0
-					? `Ruby backend is unavailable in this session. Pass language: ${alternatives.join(" or ")} or install Ruby.`
-					: 'Ruby backend is unavailable in this session. Install Ruby to use language: "rb".',
-			);
-		}
-		return { backend: rubyBackend };
-	}
-	if (language === "julia") {
-		if (!allowJl) throw new ToolError("Julia backend is disabled (PI_JL=0 or eval.jl = false).");
-		const available = await juliaBackend.isAvailable(session, probeOpts);
-		throwIfAborted(probeOpts?.signal);
-		if (!available) {
-			const alternatives = [allowJs ? '"js"' : null, allowPy ? '"py"' : null, allowRb ? '"rb"' : null].filter(
-				Boolean,
-			);
-			throw new ToolError(
-				alternatives.length > 0
-					? `Julia backend is unavailable in this session. Pass language: ${alternatives.join(" or ")} or install Julia.`
-					: 'Julia backend is unavailable in this session. Install Julia to use language: "jl".',
-			);
-		}
-		return { backend: juliaBackend };
 	}
 	if (!allowJs) throw new ToolError("JavaScript backend is disabled (PI_JS=0 or eval.js = false).");
 	return { backend: jsBackend };
@@ -322,8 +274,6 @@ async function resolveBackend(
 function formatEvalInputLanguage(value: string): string {
 	if (value === "py" || value === "python") return "python";
 	if (value === "js" || value === "javascript") return "javascript";
-	if (value === "rb" || value === "ruby") return "ruby";
-	if (value === "jl" || value === "julia") return "julia";
 	return value;
 }
 
@@ -353,13 +303,18 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 		} else {
 			const backends = resolveEvalBackends(this.session);
 			const sessionSpawns = this.session.getSessionSpawns?.() ?? "*";
+			const preludeDocumentation = getEnabledEvalPreludes(this.session.getEvalPreludes?.() ?? [])
+				.map(definition => definition.documentation.trim())
+				.filter(Boolean)
+				.join("\n\n");
 			base = getEvalToolDescription({
 				py: backends.python,
 				js: backends.js,
-				rb: backends.ruby,
-				jl: backends.julia,
 				spawns: sessionSpawns,
 				autoBackgroundEnabled: this.session.settings.get("eval.autoBackground.enabled"),
+				evalTools: this.session.settings.get("eval.tools.enabled"),
+				eagerDelegation: sessionDelegationBias(this.session) === "eager",
+				preludeDocumentation,
 			});
 		}
 		return this.#codeModeDescription(base) ?? base;
@@ -383,7 +338,11 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 				return tool ? [{ name, parameters: (tool as { parameters?: unknown }).parameters }] : [];
 			}),
 		);
-		return prompt.render(evalCodeModeDescription, { baseDescription, declarations });
+		const preludeDeclarations = getEnabledEvalPreludes(session.getEvalPreludes?.() ?? [])
+			.map(definition => definition.codeModeDeclarations?.trim())
+			.filter((declaration): declaration is string => Boolean(declaration))
+			.join("\n\n");
+		return prompt.render(evalCodeModeDescription, { baseDescription, declarations, preludeDeclarations });
 	}
 	/** All reuse-chain examples; the `examples` getter filters by enabled languages. */
 	private static readonly ALL_EXAMPLES: readonly ToolExample<typeof evalSchema.infer>[] = [
@@ -411,22 +370,6 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 				code: "display(sorted(data['dependencies']))",
 			},
 		},
-		{
-			caption: "Ruby first call — set up once",
-			call: {
-				language: "rb",
-				title: "setup",
-				code: "require 'json'\npkg_path = 'package.json'",
-			},
-		},
-		{
-			caption: "Ruby second call — reuse, do NOT re-require",
-			call: {
-				language: "rb",
-				title: "load config",
-				code: "pkg = JSON.parse(read(pkg_path))\ndisplay(pkg.keys.sort)",
-			},
-		},
 	];
 	get examples(): readonly ToolExample<typeof evalSchema.infer>[] {
 		const langs = new Set(this.#enabledLanguages());
@@ -434,7 +377,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 	}
 	get parameters(): typeof evalSchema {
 		const langs = this.#enabledLanguages();
-		if (langs.length === 0 || langs.length === EVAL_LANGUAGE_ORDER.length) return evalSchema;
+		if (langs.length === 0 || (langs.length === 2 && langs[0] === "py" && langs[1] === "js")) return evalSchema;
 		const key = langs.join(",");
 		if (this.#paramsKey !== key) {
 			this.#cachedParams = buildEvalSchema(langs);
@@ -487,17 +430,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 		const session = this.session;
 		const excludeWebP = webpExclusionForModel(session.getActiveModel?.());
 
-		const requestedLanguage = params.language as string;
-		const cellLanguage =
-			requestedLanguage === "py"
-				? "python"
-				: requestedLanguage === "rb"
-					? "ruby"
-					: requestedLanguage === "jl"
-						? "julia"
-						: requestedLanguage === "js"
-							? "js"
-							: requestedLanguage;
+		const cellLanguage = formatEvalInputLanguage(params.language);
 		// Bound backend discovery by the eval cell's own timeout and abort signal:
 		// the cell IdleTimeout is armed only later in #runCells, so a hung runtime
 		// probe would otherwise wedge the whole turn (issue #9466).
@@ -584,6 +517,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 					});
 					const finalText = result.content.find(block => block.type === "text")?.text ?? "";
 					latestText = finalText;
+					latestDetails = result.details;
 					// Hand the full result (images included) to the foreground waiter
 					// before deciding the job's terminal state.
 					completion.resolve({ kind: "completed", result });
@@ -593,13 +527,19 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 						// records it as failed and delivers the error text.
 						throw new ToolError(finalText || "Eval cell failed");
 					}
-					await reportProgress(finalText, { async: { state: "completed", jobId, type: "eval" } });
+					await reportProgress(finalText, {
+						...result.details,
+						async: { state: "completed", jobId, type: "eval" },
+					});
 					return finalText;
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error);
 					latestText = message;
 					completion.resolve({ kind: "failed", error });
-					await reportProgress(message, { async: { state: "failed", jobId, type: "eval" } });
+					await reportProgress(message, {
+						...latestDetails,
+						async: { state: "failed", jobId, type: "eval" },
+					});
 					throw error;
 				}
 			},
@@ -791,7 +731,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 				const cell = cells[i];
 				const backend = cell.resolved.backend;
 				// The per-cell `timeout` is a budget on the cell runtime's *own*
-				// work. Host-side `agent()`/`parallel()`/`completion()` bridge calls suspend
+				// work. Host-side waits on `agent()`/`completion()` handles suspend
 				// that budget entirely and restart a fresh timeout window when control
 				// returns to the active backend runtime. Compute, stdout, `log()`/`phase()`, and
 				// ordinary tool calls all count against the budget. The watchdog drives

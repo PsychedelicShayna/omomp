@@ -49,16 +49,12 @@ describe("flash device policy", () => {
 
 	test("matches the GUID text emitted by sgdisk", () => {
 		expect(
-			partitionTypeMatches(
-				"Partition GUID code: 21686148-6449-6E6F-744E-656564454649 (BIOS boot partition)",
-				1,
-			),
+			partitionTypeMatches("Partition GUID code: 21686148-6449-6E6F-744E-656564454649 (BIOS boot partition)", 1),
 		).toBe(true);
 		expect(partitionTypeMatches("Partition GUID code: C12A7328-F81F-11D2-BA4B-00A0C93EC93B", 2)).toBe(true);
 		expect(partitionTypeMatches("Partition GUID code: CA7D7CCB-63ED-4C53-861C-1742536059CC", 3)).toBe(true);
 		expect(partitionTypeMatches("Partition GUID code: C12A7328-F81F-11D2-BA4B-00A0C93EC93B", 1)).toBe(false);
 	});
-
 
 	test("skips special files and dereferences portable symlinks", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "portable-copy-"));
@@ -100,7 +96,16 @@ describe("boot configuration", () => {
 	});
 
 	test("carries boot, field, database, and P2V packages", () => {
-		for (const pkg of ["grub", "networkmanager", "usbmuxd", "terminus-font", "opus", "sqlite", "python", "qemu-img"]) {
+		for (const pkg of [
+			"grub",
+			"networkmanager",
+			"usbmuxd",
+			"terminus-font",
+			"opus",
+			"sqlite",
+			"python",
+			"qemu-img",
+		]) {
 			expect(STICK_PACKAGES).toContain(pkg);
 		}
 	});
@@ -181,9 +186,9 @@ describe("portable payload", () => {
 		const good = "cd42404d52ad55ccfa9aca4adc828aa5800ad9d385a0671fbcbf724118320619";
 		expect(await verifyPayload(root, [{ path: "one", type: "file", mode: 0o600, sha256: good }])).toEqual([]);
 		await fs.chmod(path.join(root, "one"), 0o644);
-		expect((await verifyPayload(root, [{ path: "one", type: "file", mode: 0o600, sha256: good }])).join(" ")).toContain(
-			"mode mismatch",
-		);
+		expect(
+			(await verifyPayload(root, [{ path: "one", type: "file", mode: 0o600, sha256: good }])).join(" "),
+		).toContain("mode mismatch");
 		expect(await verifyPayload(root, [{ path: "missing", type: "file", mode: 0o600, sha256: good }])).toHaveLength(1);
 	});
 });

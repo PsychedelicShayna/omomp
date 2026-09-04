@@ -186,7 +186,7 @@ function nearestModels(input: string, available: readonly Model<Api>[], limit = 
 /** Iterative two-row Levenshtein distance. */
 function editDistance(a: string, b: string): number {
 	if (a === b) return 0;
-	const prev: number[] = new Array(b.length + 1);
+	const prev: number[] = Array.from({ length: b.length + 1 });
 	for (let j = 0; j <= b.length; j++) prev[j] = j;
 	for (let i = 1; i <= a.length; i++) {
 		let diag = prev[0]!;

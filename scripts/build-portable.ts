@@ -34,7 +34,9 @@ export function resolvePortableNativeBuild(which: (name: string) => string | nul
 export function assertBaselineEmbedding(source: string): void {
 	const variants = [...source.matchAll(/variant:\s*["'](modern|baseline|default)["']/g)].map(match => match[1]);
 	if (variants.length !== 1 || variants[0] !== "baseline") {
-		throw new Error(`Portable build requires exactly one embedded baseline native (found: ${variants.join(", ") || "none"})`);
+		throw new Error(
+			`Portable build requires exactly one embedded baseline native (found: ${variants.join(", ") || "none"})`,
+		);
 	}
 }
 
@@ -120,7 +122,8 @@ export async function buildPortable(): Promise<PortableManifest> {
 		}
 
 		const nativePath = path.join(nativeDir, baselineNativeName);
-		if (!(await Bun.file(nativePath).exists())) throw new Error(`Baseline native build did not produce ${nativePath}`);
+		if (!(await Bun.file(nativePath).exists()))
+			throw new Error(`Baseline native build did not produce ${nativePath}`);
 
 		await run([process.execPath, "--cwd=packages/stats", "run", "gen:stats"]);
 		generatedStats = true;
