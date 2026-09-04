@@ -244,7 +244,18 @@ async function buildLocalHostAddon(host: HostInfo, destDir: string): Promise<voi
 
 async function main(): Promise<void> {
 	const options = parseCliArgs(process.argv.slice(2));
-	const host: HostInfo = { platform: process.platform, arch: process.arch, avx2: detectHostAvx2Support() };
+	const requestedVariant = Bun.env.OMP_NATIVE_X64_VARIANT?.trim();
+	if (requestedVariant && requestedVariant !== "baseline" && requestedVariant !== "modern") {
+		throw new Error(`OMP_NATIVE_X64_VARIANT must be "baseline" or "modern" (got ${JSON.stringify(requestedVariant)})`);
+	}
+	if (requestedVariant && process.arch !== "x64") {
+		throw new Error(`OMP_NATIVE_X64_VARIANT is only valid on x64 hosts (got ${process.arch})`);
+	}
+	const host: HostInfo = {
+		platform: process.platform,
+		arch: process.arch,
+		avx2: requestedVariant ? requestedVariant === "modern" : detectHostAvx2Support(),
+	};
 	const destDir = options.dest ? path.resolve(options.dest) : path.join(repoRoot, "packages/natives/native");
 
 	const backend = Bun.env.OMP_NATIVE_BUILD_BACKEND?.trim();

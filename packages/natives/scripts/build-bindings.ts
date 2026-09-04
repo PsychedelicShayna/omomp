@@ -64,10 +64,17 @@ const rustDir = path.join(repoRoot, "crates/pi-natives");
 const nativeDir = path.join(import.meta.dir, "../native");
 const packageJsonPath = path.join(import.meta.dir, "../package.json");
 
+const requestedVariant = Bun.env.OMP_NATIVE_X64_VARIANT?.trim();
+if (requestedVariant && requestedVariant !== "baseline" && requestedVariant !== "modern") {
+	throw new Error(`OMP_NATIVE_X64_VARIANT must be "baseline" or "modern" (got ${JSON.stringify(requestedVariant)})`);
+}
+if (requestedVariant && process.arch !== "x64") {
+	throw new Error(`OMP_NATIVE_X64_VARIANT is only valid on x64 hosts (got ${process.arch})`);
+}
 const localAddon = resolveLocalHostAddon({
 	platform: process.platform,
 	arch: process.arch,
-	avx2: detectHostAvx2Support(),
+	avx2: requestedVariant ? requestedVariant === "modern" : detectHostAvx2Support(),
 });
 const effectiveVariant = localAddon.x64Variant;
 const variantSuffix = effectiveVariant ? `-${effectiveVariant}` : "";
@@ -77,12 +84,16 @@ const variantSuffix = effectiveVariant ? `-${effectiveVariant}` : "";
 // the target's default CPU features: `-C target-cpu=native` would bake the build
 // host's CPU features into the addon and trips ring 0.17's aarch64-apple
 // const assertion (CAPS_STATIC == MIN_STATIC_FEATURES).
-if (!Bun.env.RUSTFLAGS) {
-	if (effectiveVariant === "modern") {
-		Bun.env.RUSTFLAGS = "-C target-cpu=x86-64-v3";
-	} else if (effectiveVariant === "baseline") {
-		Bun.env.RUSTFLAGS = "-C target-cpu=x86-64-v2";
+if (effectiveVariant) {
+	const expectedTargetCpu = effectiveVariant === "modern" ? "x86-64-v3" : "x86-64-v2";
+	const configuredTargetCpu = Bun.env.RUSTFLAGS?.match(/(?:^|\s)-C\s*target-cpu=([^\s]+)/)?.[1];
+	if (requestedVariant && configuredTargetCpu && configuredTargetCpu !== expectedTargetCpu) {
+		throw new Error(
+			`OMP_NATIVE_X64_VARIANT=${requestedVariant} requires target-cpu=${expectedTargetCpu}, ` +
+				`but RUSTFLAGS selects target-cpu=${configuredTargetCpu}`,
+		);
 	}
+	if (!Bun.env.RUSTFLAGS) Bun.env.RUSTFLAGS = `-C target-cpu=${expectedTargetCpu}`;
 }
 
 async function cleanupStaleTemps(dir: string): Promise<void> {

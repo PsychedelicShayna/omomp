@@ -138,6 +138,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.modelsHelp,
 	},
 	{
+		name: "flash",
+		load: () => import("./commands/flash").then(m => m.default),
+		help: commandHelp.flashHelp,
+	},
+	{
 		name: "plugin",
 		load: () => import("./commands/plugin").then(m => m.default),
 		help: commandHelp.pluginHelp,
