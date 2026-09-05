@@ -637,8 +637,19 @@ export class ExtensionRunner {
 	) {
 		this.#evalBackends = evalBackendRegistry(sessionManager);
 		this.#uiContext = noOpUIContext;
+		// Registrations queued at factory time are flushed here, where the
+		// registering extension can no longer catch a rejection; one bad token
+		// must cost that backend, not the session.
 		for (const backend of this.runtime.pendingEvalBackendRegistrations?.splice(0) ?? []) {
-			this.registerEvalBackend(backend);
+			try {
+				this.registerEvalBackend(backend);
+			} catch (error) {
+				logger.warn("Extension eval backend registration rejected; backend unavailable", {
+					id: backend.id,
+					aliases: backend.aliases,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
 		}
 		this.runtime.registerEvalBackend = backend => this.registerEvalBackend(backend);
 		this.#getMemoryFn = getMemory;

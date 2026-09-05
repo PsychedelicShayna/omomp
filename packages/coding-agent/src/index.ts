@@ -15,6 +15,12 @@ export type * from "./config/prompt-templates";
 export * from "./config/prompt-templates";
 export type { RetrySettings, SkillsSettings } from "./config/settings";
 export { Settings, settings } from "./config/settings";
+// Eval tool bridge for extension-provided eval backends (works in source and
+// compiled mode: extensions import this package by bare specifier, which the
+// extension loader remaps to the bundled host module)
+export { resolveEvalUrlRoots } from "./eval/backend";
+export type { PyToolBridgeEntry, PyToolBridgeInfo } from "./eval/py/tool-bridge";
+export { ensurePyToolBridge, registerPyToolBridge } from "./eval/py/tool-bridge";
 // Custom commands
 export type * from "./extensibility/custom-commands/types";
 export type * from "./extensibility/custom-tools";

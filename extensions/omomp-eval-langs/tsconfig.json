@@ -1,0 +1,15 @@
+{
+  "extends": "../../packages/coding-agent/tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "../../../..",
+    "allowImportingTsExtensions": true,
+    // `@earendil-works/pi-coding-agent` is resolved at runtime by the extension
+    // loader's legacy-pi remap (to bundled host modules inside a compiled
+    // binary, to the on-disk package in a source checkout). Nothing supplies it
+    // to the type checker, so point it at the host barrel the remap resolves to.
+    "paths": {
+      "@earendil-works/pi-coding-agent": ["../../packages/coding-agent/src/index.ts"]
+    }
+  },
+  "include": ["**/*.ts"]
+}
