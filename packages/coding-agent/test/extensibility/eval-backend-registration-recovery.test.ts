@@ -26,6 +26,7 @@ function backend(id: string, aliases: string[]): ExtensionEvalBackend {
 			exitCode: 0,
 			cancelled: false,
 			truncated: false,
+			artifactId: undefined,
 			totalLines: 1,
 			totalBytes: id.length,
 			outputLines: 1,
