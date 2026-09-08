@@ -18,6 +18,7 @@ import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getProjectAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 import * as advisorModule from "../src/advisor";
+import advisorSystemPrompt from "../src/prompts/advisor/system.md" with { type: "text" };
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
 describe("AgentSession advisor toggle", () => {
@@ -175,6 +176,68 @@ describe("AgentSession advisor toggle", () => {
 
 		expect(session.getAdvisorAgent()?.state.model.provider).toBe(replacementModel.provider);
 		expect(session.getAdvisorAgent()?.state.model.id).toBe(replacementModel.id);
+	});
+
+	it("replaces only the advisor base prompt and rebuilds on override changes and reset", async () => {
+		const config: advisorModule.AdvisorConfig = { name: "Prompt", instructions: "  specialization  " };
+		const promptSession = new AgentSession({
+			agent: new Agent({ initialState: { model, systemPrompt: ["Primary prompt"], tools: [] } }),
+			sessionManager: SessionManager.inMemory(tempDir.path()),
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry,
+			advisorTools: [],
+			advisorConfigs: [config],
+			advisorContextPrompt: "Project context",
+			advisorMemoryPrompt: "Memory instructions",
+			advisorWatchdogPrompt: "Watchdog instructions",
+			advisorSharedInstructions: "Shared instructions",
+		});
+		try {
+			const defaultAdvisor = enableAdvisor(promptSession);
+			const appended = [
+				"Project context",
+				"Memory instructions",
+				"Watchdog instructions",
+				"Shared instructions",
+				"specialization",
+			];
+			expect(defaultAdvisor.state.systemPrompt).toEqual([advisorSystemPrompt, ...appended]);
+
+			config.systemPrompt = "  Custom base\nKeep whitespace.\n";
+			promptSession.setAdvisorEnabled(true);
+			expect(promptSession.getAdvisorAgent()?.state.systemPrompt).toEqual([config.systemPrompt, ...appended]);
+
+			// Empty is still an explicit replacement, not a request for the default.
+			config.systemPrompt = "";
+			promptSession.setAdvisorEnabled(true);
+			expect(promptSession.getAdvisorAgent()?.state.systemPrompt).toEqual(["", ...appended]);
+
+			delete config.systemPrompt;
+			promptSession.setAdvisorEnabled(true);
+			expect(promptSession.getAdvisorAgent()?.state.systemPrompt).toEqual([advisorSystemPrompt, ...appended]);
+
+			// Save & apply replaces the roster through this public reconfiguration path.
+			promptSession.applyAdvisorConfigs([{ ...config, systemPrompt: "Reloaded base" }], "Reloaded shared");
+			expect(promptSession.getAdvisorAgent()?.state.systemPrompt).toEqual([
+				"Reloaded base",
+				"Project context",
+				"Memory instructions",
+				"Watchdog instructions",
+				"Reloaded shared",
+				"specialization",
+			]);
+			promptSession.applyAdvisorConfigs([{ ...config }], "Reloaded shared");
+			expect(promptSession.getAdvisorAgent()?.state.systemPrompt).toEqual([
+				advisorSystemPrompt,
+				"Project context",
+				"Memory instructions",
+				"Watchdog instructions",
+				"Reloaded shared",
+				"specialization",
+			]);
+		} finally {
+			await promptSession.dispose();
+		}
 	});
 
 	it("refreshes the live advisor when the advisor role setting changes", () => {

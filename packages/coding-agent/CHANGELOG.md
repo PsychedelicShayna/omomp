@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added per-advisor base system prompt editing in `/advisor configure`, with Backspace to restore the bundled default.
 - Added `omomp flash` to build and install an attested x86-64 baseline portable
   system with encrypted storage, resumable phases, a bounded profile, and
   explicit tmpfs persistence.

@@ -287,6 +287,9 @@ Fields:
 - `advisors[].model`: optional model selector with optional `:level` thinking suffix (e.g. `x-ai/grok-code-fast:high`). Omitted → the advisor uses `modelRoles.advisor`.
 - `advisors[].tools`: optional list of built-in tool names to grant. Omitted → the default `read`/`grep`/`glob` subset; explicit `[]` → no investigative tools. Any name in [`BUILTIN_TOOL_NAMES`](../packages/coding-agent/src/tools/builtin-names.ts) is accepted, including mutating tools. Legacy aliases (`search`→`grep`, `find`→`glob`) are normalized. Unknown names are dropped with a warning; if that leaves a nonempty input with no valid names, the implementation currently treats the result as omitted and uses the default subset.
 - `advisors[].instructions`: this advisor's specialization, appended after the shared baseline. Both instruction fields expand `@path` imports like `WATCHDOG.md`.
+- `advisors[].systemPrompt`: optional literal base prompt that replaces the bundled advisor system prompt. Project context, memory instructions, `WATCHDOG.md`, shared instructions, and per-advisor instructions still append in their normal order. Omitted uses the bundled default; an explicit empty string is an empty base, not a reset. Unlike the instruction fields, this field does not expand `@path` imports.
+
+In `/advisor configure`, open an advisor and select **System prompt**, directly below **Instructions**. Enter opens the shared multiline editor, prefilled with the current override or the bundled default. Ctrl+G opens your external editor; Ctrl+Q / Ctrl+Enter accepts the text, and Esc cancels without changing the override. Backspace while **System prompt** is highlighted in the list clears the override; Backspace inside the editor only edits text. **Save & apply** persists the change and rebuilds the live advisors. Clearing removes `systemPrompt` from the saved YAML.
 
 ### Discovery locations
 

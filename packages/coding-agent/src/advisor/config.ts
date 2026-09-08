@@ -23,6 +23,8 @@ export interface AdvisorConfig {
 	model?: string;
 	tools?: string[];
 	instructions?: string;
+	/** Replaces the bundled base prompt when defined; other instructions still append. */
+	systemPrompt?: string;
 	/** Per-advisor on/off toggle (default `true`). When `false`, the advisor
 	 *  stays in the roster but its runtime is never built — it shows `○` in
 	 *  the status line and `/advisor status` rather than disappearing. */
@@ -55,6 +57,7 @@ const advisorEntrySchema = type({
 	"model?": "string",
 	"tools?": "string[]",
 	"instructions?": "string",
+	"systemPrompt?": "string",
 	"enabled?": "boolean",
 });
 
@@ -173,6 +176,7 @@ export async function discoverAdvisorConfigs(cwd: string, agentDir?: string): Pr
 				model: entry.model?.trim() || undefined,
 				tools: filterAdvisorTools(entry.tools, item.path),
 				instructions,
+				systemPrompt: entry.systemPrompt,
 				enabled: entry.enabled,
 			});
 		}
@@ -259,6 +263,7 @@ export async function loadWatchdogConfigFile(filePath: string): Promise<Watchdog
 		if (a.model?.trim()) advisor.model = a.model;
 		if (a.tools !== undefined) advisor.tools = [...a.tools];
 		if (a.instructions?.trim()) advisor.instructions = a.instructions;
+		if (a.systemPrompt !== undefined) advisor.systemPrompt = a.systemPrompt;
 		if (a.enabled !== undefined) advisor.enabled = a.enabled;
 		return advisor;
 	});
@@ -316,6 +321,9 @@ export function serializeWatchdogConfig(doc: WatchdogConfigDoc): string {
 			}
 			if (advisor.instructions?.trim()) {
 				appendYamlString(lines, "    ", "instructions", advisor.instructions);
+			}
+			if (advisor.systemPrompt !== undefined) {
+				appendYamlString(lines, "    ", "systemPrompt", advisor.systemPrompt);
 			}
 			if (advisor.enabled !== undefined) lines.push(`    enabled: ${advisor.enabled}`);
 		}
