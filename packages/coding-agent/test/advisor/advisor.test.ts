@@ -30,6 +30,7 @@ import type { Settings } from "../../src/config/settings";
 import { type AdvisorConfigDeps, AdvisorConfigOverlayComponent } from "../../src/modes/components/advisor-config";
 import { createAdvisorMessageCard } from "../../src/modes/components/advisor-message";
 import { getThemeByName, setThemeInstance } from "../../src/modes/theme/theme";
+import advisorSystemPrompt from "../../src/prompts/advisor/system.md" with { type: "text" };
 import { SecretObfuscator } from "../../src/secrets/obfuscator";
 import { formatSessionHistoryMarkdown } from "../../src/session/session-history-format";
 import { YieldQueue } from "../../src/session/yield-queue";
@@ -6146,6 +6147,92 @@ describe("advisor", () => {
 		const make = (doc: WatchdogConfigDoc, extra?: Partial<AdvisorConfigDeps>): AdvisorConfigOverlayComponent =>
 			new AdvisorConfigOverlayComponent({} as unknown as TUI, { ...deps, ...extra }, "project", doc, callbacks);
 		const fullHeight = Math.max(14, process.stdout.rows || 40);
+
+		it("edits the base prompt below Instructions, cancels without mutation, and resets only from the list", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			setThemeInstance(uiTheme);
+			const doc: WatchdogConfigDoc = {
+				advisors: [{ name: "Prompt", instructions: "Append this", systemPrompt: "XY" }],
+			};
+			const overlay = make(doc);
+			overlay.handleInput("\r");
+			const detail = strip(overlay.render(200));
+			expect(detail.indexOf("System prompt")).toBeGreaterThan(detail.indexOf("Instructions"));
+			for (let i = 0; i < 5; i++) overlay.handleInput("\x1b[B");
+			overlay.handleInput("\r");
+			overlay.handleInput("\x7f"); // Inside the editor: ordinary deletion, not reset.
+			overlay.handleInput("\x1b");
+			expect(doc.advisors[0].systemPrompt).toBe("XY");
+			expect(strip(overlay.render(200))).not.toContain("● unsaved");
+
+			overlay.handleInput("\r"); // Cancellation keeps System prompt selected.
+			overlay.handleInput("\x7f");
+			overlay.handleInput("\x11");
+			expect(doc.advisors[0].systemPrompt).toBe("X");
+			overlay.handleInput("\r");
+			overlay.handleInput("\x7f");
+			overlay.handleInput("\x11");
+			expect(doc.advisors[0].systemPrompt).toBe("");
+
+			overlay.handleInput("\x7f"); // On the list item: restore undefined/default.
+			expect(doc.advisors[0].systemPrompt).toBeUndefined();
+			expect(doc.advisors[0].instructions).toBe("Append this");
+			overlay.handleInput("\r");
+			overlay.handleInput("\x11");
+			expect(doc.advisors[0].systemPrompt).toBe(advisorSystemPrompt);
+		});
+
+		it("prefills the bundled base without creating an override on cancellation", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			setThemeInstance(uiTheme);
+			const doc: WatchdogConfigDoc = { advisors: [{ name: "Prompt" }] };
+			const overlay = make(doc);
+			overlay.handleInput("\r");
+			for (let i = 0; i < 5; i++) overlay.handleInput("\x1b[B");
+			overlay.handleInput("\r");
+			overlay.handleInput("\x1b");
+			expect(doc.advisors[0].systemPrompt).toBeUndefined();
+			expect(strip(overlay.render(200))).not.toContain("● unsaved");
+			overlay.handleInput("\r");
+			overlay.handleInput("\x11");
+			expect(doc.advisors[0].systemPrompt).toBe(advisorSystemPrompt);
+		});
+
+		it("saves an explicit empty base on the default advisor and removes it after keyboard reset", async () => {
+			const uiTheme = await getThemeByName("dark");
+			if (!uiTheme) throw new Error("theme unavailable");
+			setThemeInstance(uiTheme);
+			const saved: WatchdogConfigDoc[] = [];
+			const overlay = new AdvisorConfigOverlayComponent(
+				{} as unknown as TUI,
+				deps,
+				"project",
+				{
+					advisors: [{ name: "default", systemPrompt: "" }],
+				},
+				{
+					...callbacks,
+					save: async (_scope, doc) => {
+						saved.push(structuredClone(doc));
+					},
+				},
+			);
+			for (let i = 0; i < 4; i++) overlay.handleInput("\x1b[B");
+			overlay.handleInput("\r");
+			await Bun.sleep(0);
+			expect(saved).toEqual([{ advisors: [{ name: "default", systemPrompt: "" }] }]);
+
+			overlay.handleInput("\r");
+			for (let i = 0; i < 5; i++) overlay.handleInput("\x1b[B");
+			overlay.handleInput("\x7f");
+			overlay.handleInput("\x1b");
+			for (let i = 0; i < 4; i++) overlay.handleInput("\x1b[B");
+			overlay.handleInput("\r");
+			await Bun.sleep(0);
+			expect(saved[1]).toEqual({ advisors: [] });
+		});
 
 		it("paints a full-screen split frame: roster sidebar + selected-advisor preview", async () => {
 			const uiTheme = await getThemeByName("dark");

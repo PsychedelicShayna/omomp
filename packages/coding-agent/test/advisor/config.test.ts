@@ -262,6 +262,41 @@ describe("WATCHDOG.yml file round-trip", () => {
 		expect(advisors.find(a => a.name === "Default Tools")?.tools).toBeUndefined();
 	});
 
+	it("preserves custom and empty base prompts through save, discovery, and reset", async () => {
+		const file = path.join(tmp, "WATCHDOG.yml");
+		const custom = '  Literal base: "quoted"\n\nDo not expand @missing.md\n\n';
+		const promptDoc: WatchdogConfigDoc = {
+			advisors: [
+				{ name: "Custom", systemPrompt: custom, instructions: "Append specialization" },
+				{ name: "Empty", systemPrompt: "" },
+				{ name: "Default" },
+			],
+		};
+		await saveWatchdogConfigFile(file, promptDoc);
+		const loaded = await loadWatchdogConfigFile(file);
+		expect(loaded).toEqual(promptDoc);
+		expect((await discoverAdvisorConfigs(tmp, tmp)).advisors.map(advisor => advisor.systemPrompt)).toEqual([
+			custom,
+			"",
+			undefined,
+		]);
+
+		delete loaded.advisors[0].systemPrompt;
+		delete loaded.advisors[1].systemPrompt;
+		await saveWatchdogConfigFile(file, loaded);
+		expect(await Bun.file(file).text()).not.toContain("systemPrompt:");
+		expect((await loadWatchdogConfigFile(file)).advisors).toEqual([
+			{ name: "Custom", instructions: "Append specialization" },
+			{ name: "Empty" },
+			{ name: "Default" },
+		]);
+		expect((await discoverAdvisorConfigs(tmp, tmp)).advisors.map(advisor => advisor.systemPrompt)).toEqual([
+			undefined,
+			undefined,
+			undefined,
+		]);
+	});
+
 	it("removes the file when the doc is empty so legacy discovery resumes", async () => {
 		const file = path.join(tmp, "WATCHDOG.yml");
 		await saveWatchdogConfigFile(file, doc);

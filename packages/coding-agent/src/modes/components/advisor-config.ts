@@ -21,6 +21,7 @@ import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import {
 	type Component,
 	Input,
+	matchesKey,
 	type MouseRoutable,
 	routeSgrMouseInput,
 	type SelectItem,
@@ -38,6 +39,7 @@ import {
 import type { ModelRegistry } from "../../config/model-registry";
 import { formatModelSelectorValue } from "../../config/model-resolver";
 import type { Settings } from "../../config/settings";
+import advisorSystemPrompt from "../../prompts/advisor/system.md" with { type: "text" };
 import type { PerAdvisorStat } from "../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
 import { formatCompactQuota } from "../controllers/command-controller";
@@ -117,7 +119,7 @@ function wrap(text: string, width: number): string[] {
 	return Bun.wrapAnsi(text, Math.max(1, width), { trim: false }).split("\n");
 }
 
-type Screen = "list" | "detail" | "name" | "model" | "tools" | "thinking" | "instructions";
+type Screen = "list" | "detail" | "name" | "model" | "tools" | "thinking" | "instructions" | "systemPrompt";
 
 /**
  * Fullscreen advisor-configuration overlay. Implements {@link Component} directly
@@ -361,6 +363,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 			!advisor.model?.trim() &&
 			advisor.tools === undefined &&
 			!advisor.instructions?.trim() &&
+			advisor.systemPrompt === undefined &&
 			advisor.enabled !== false
 		);
 	}
@@ -435,7 +438,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 		if (match) this.#showDetail(Number(match[1]));
 	}
 
-	#showDetail(index: number): void {
+	#showDetail(index: number, selectedField?: string): void {
 		const advisor = this.#doc.advisors[index];
 		if (!advisor) {
 			this.#showList();
@@ -458,13 +461,35 @@ export class AdvisorConfigOverlayComponent implements Component {
 		items.push(
 			{ value: "tools", label: "Tools", description: toolsDescription },
 			{ value: "instructions", label: "Instructions", description: previewLine(advisor.instructions) },
+			{
+				value: "systemPrompt",
+				label: "System prompt",
+				description: advisor.systemPrompt === undefined ? "(bundled default)" : previewLine(advisor.systemPrompt),
+			},
 			{ value: "delete", label: "Delete this advisor" },
 			{ value: "back", label: "Back" },
 		);
 		const list = new SelectList(items, Math.max(1, items.length), getSelectListTheme());
+		if (selectedField) list.setSelectedIndex(items.findIndex(item => item.value === selectedField));
+		const handleInput = list.handleInput.bind(list);
+		list.handleInput = data => {
+			if (matchesKey(data, "backspace") && list.getSelectedItem()?.value === "systemPrompt") {
+				if (advisor.systemPrompt !== undefined) {
+					delete advisor.systemPrompt;
+					this.#dirty = true;
+					this.#showDetail(index, "systemPrompt");
+				}
+				return;
+			}
+			handleInput(data);
+		};
 		list.onSelect = item => this.#onDetailSelect(index, item.value);
 		list.onCancel = () => this.#showList();
-		this.#setScreen("detail", list, `Editing "${advisor.name}" · Enter / click edit field · Esc back`);
+		this.#setScreen(
+			"detail",
+			list,
+			`Editing "${advisor.name}" · Enter / click edit · Backspace on System prompt resets · Esc back`,
+		);
 	}
 
 	#onDetailSelect(index: number, field: string): void {
@@ -496,6 +521,9 @@ export class AdvisorConfigOverlayComponent implements Component {
 				return;
 			case "instructions":
 				this.#showInstructionsEditor(index);
+				return;
+			case "systemPrompt":
+				this.#showSystemPromptEditor(index);
 				return;
 			case "delete":
 				this.#doc.advisors.splice(index, 1);
@@ -606,6 +634,22 @@ export class AdvisorConfigOverlayComponent implements Component {
 			list,
 			"Enter / click toggle · select Done or Esc to apply (empty = no tools; read/grep/glob = default)",
 		);
+	}
+
+	#showSystemPromptEditor(index: number): void {
+		const advisor = this.#doc.advisors[index];
+		const editor = new HookEditorComponent(
+			this.#tui,
+			`System prompt — ${advisor.name}`,
+			advisor.systemPrompt ?? advisorSystemPrompt,
+			value => {
+				advisor.systemPrompt = value;
+				this.#dirty = true;
+				this.#showDetail(index, "systemPrompt");
+			},
+			() => this.#showDetail(index, "systemPrompt"),
+		);
+		this.#setScreen("systemPrompt", editor, "");
 	}
 
 	/** `index === -1` edits the shared top-level instructions; otherwise advisor[index]. */

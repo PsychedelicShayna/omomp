@@ -785,9 +785,15 @@ export class SessionAdvisors {
 	#advisorRuntimeSignature(config: AdvisorConfig, slug: string, model: Model, thinkingLevel: ThinkingLevel): string {
 		const tools = config.tools?.length ? config.tools.join("\u001e") : "";
 		const instructions = config.instructions?.trim() ?? "";
-		return [config.name, slug, formatModelStringWithRouting(model), thinkingLevel, tools, instructions].join(
-			"\u001f",
-		);
+		return [
+			config.name,
+			slug,
+			formatModelStringWithRouting(model),
+			thinkingLevel,
+			tools,
+			instructions,
+			JSON.stringify(config.systemPrompt ?? null),
+		].join("\u001f");
 	}
 
 	#advisorRuntimeMatchesCurrentConfig(): boolean {
@@ -844,7 +850,7 @@ export class SessionAdvisors {
 
 			// `#advisorWatchdogPrompt` already carries WATCHDOG.md + YAML shared
 			// instructions; `config.instructions` adds this advisor's specialization.
-			const systemPrompt = [advisorSystemPrompt];
+			const systemPrompt = [config.systemPrompt ?? advisorSystemPrompt];
 			if (this.#advisorContextPrompt) systemPrompt.push(this.#advisorContextPrompt);
 			if (this.#advisorMemoryPrompt) systemPrompt.push(this.#advisorMemoryPrompt);
 			if (this.#advisorWatchdogPrompt) systemPrompt.push(this.#advisorWatchdogPrompt);
