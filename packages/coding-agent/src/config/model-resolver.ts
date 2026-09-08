@@ -1148,6 +1148,7 @@ function shouldInheritDefaultBeforePriority(role: ModelRole): boolean {
  */
 const ROLE_PRIORITY_ALIAS: Partial<Record<ModelRole, keyof typeof MODEL_PRIO>> = {
 	advisor: "slow",
+	chronicler: "slow",
 	tiny: "smol",
 };
 
@@ -1674,6 +1675,18 @@ export function resolveAdvisorRoleSelection(
 	availableModels: Model<Api>[],
 ): { model: Model<Api>; thinkingLevel?: ConfiguredThinkingLevel } | undefined {
 	const resolved = resolveModelRoleValue(formatModelRoleAlias("advisor"), availableModels, {
+		settings,
+		matchPreferences: getModelMatchPreferences(settings),
+	});
+	return resolved.model ? { model: resolved.model, thinkingLevel: resolved.thinkingLevel } : undefined;
+}
+
+/** Resolve the independent capture role through the slow priority chain when unset. */
+export function resolveChroniclerRoleSelection(
+	settings: Settings,
+	availableModels: Model<Api>[],
+): { model: Model<Api>; thinkingLevel?: ConfiguredThinkingLevel } | undefined {
+	const resolved = resolveModelRoleValue(formatModelRoleAlias("chronicler"), availableModels, {
 		settings,
 		matchPreferences: getModelMatchPreferences(settings),
 	});

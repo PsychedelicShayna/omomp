@@ -981,6 +981,8 @@ export function createSubagentSettings(
 			// per agent (frontmatter `advisor` / `task.agentAdvisor`) via overrides.
 			"advisor.enabled": false,
 			...overrides,
+			// Shared parent artifacts must have only the parent capture owner.
+			"chronicler.enabled": false,
 		},
 		{ storage: baseSettings.getStorage() },
 	);

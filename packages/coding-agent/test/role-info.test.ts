@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
+import { resolveChroniclerRoleSelection } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { getRoleInfo } from "@oh-my-pi/pi-coding-agent/config/model-roles";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 
@@ -63,4 +65,18 @@ describe("getRoleInfo", () => {
 			color: "success",
 		});
 	});
+});
+
+test("chronicler selection is independent and unset capture uses the slow priority chain", () => {
+	const luna = createMockModel({ provider: "openai-codex", id: "gpt-5.6-luna" }).model;
+	const sol = createMockModel({ provider: "openai-codex", id: "gpt-5.6-sol" }).model;
+	const available = [luna, sol];
+	const explicit = Settings.isolated({
+		modelRoles: { chronicler: "openai-codex/gpt-5.6-luna", slow: "openai-codex/gpt-5.6-sol" },
+	});
+	const unset = Settings.isolated({
+		modelRoles: { default: "openai-codex/gpt-5.6-luna", slow: "openai-codex/gpt-5.6-luna" },
+	});
+	expect(resolveChroniclerRoleSelection(explicit, available)?.model).toBe(luna);
+	expect(resolveChroniclerRoleSelection(unset, available)?.model).toBe(sol);
 });

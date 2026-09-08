@@ -3011,6 +3011,17 @@ export const SETTINGS_SCHEMA = {
 			],
 		},
 	},
+	"chronicler.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "memory",
+			group: "General",
+			label: "Chronicler capture",
+			description:
+				"Continuously capture semantic beats from this session into its session artifacts directory using the @chronicler role. Independent of Memory Backend; both may be on.",
+		},
+	},
 	"sharpshooter.model": {
 		type: "string",
 		default: undefined,
