@@ -24,7 +24,11 @@ const chronicleSchema = type({
 	"uncertainty?": "string",
 });
 const finishSchema = type({ carry: type({ sources: "string[]", text: "string" }).or("null") });
-const readSchema = type({ id: "string" });
+const readSchema = type({
+	"id?": "string",
+	"offset?": type("number.integer >= 0").describe("Metadata page offset; omit id to list beats."),
+	"limit?": type("1 <= number.integer <= 100").describe("Metadata page size; default 50."),
+});
 
 export interface ChronicleDetails {
 	id: string;
@@ -33,10 +37,9 @@ export interface ChronicleDetails {
 export interface FinishChronicleDetails {
 	carry: CaptureBatch["carry"];
 }
-export interface ReadChronicleDetails {
-	id: string;
-	sources: string[];
-}
+export type ReadChronicleDetails =
+	| { id: string; sources: string[] }
+	| { offset: number; nextOffset: number | null; total: number };
 
 function assertMutable(batch: CaptureBatch, signal?: AbortSignal): void {
 	if (signal?.aborted || batch.revoked) throw new ToolError("This capture pass was revoked.");
@@ -169,18 +172,43 @@ export class ReadChronicleTool implements AgentTool<typeof readSchema, ReadChron
 		signal?: AbortSignal,
 	): Promise<AgentToolResult<ReadChronicleDetails>> {
 		if (signal?.aborted || this.batch.revoked) throw new ToolError("This capture pass was revoked.");
-		const beat =
-			this.store.beats.find(beat => beat.id === args.id) ?? this.batch.beats.find(beat => beat.id === args.id);
-		if (!beat) throw new ToolError(`Unknown beat ID: ${args.id}`);
-		const { body, ...metadata } = beat;
-		const text = `${JSON.stringify(metadata, null, 2)}
-
-# ${beat.title}
-
-${body}`;
+		let text: string;
+		let details: ReadChronicleDetails;
+		if (args.id !== undefined) {
+			if (args.offset !== undefined || args.limit !== undefined)
+				throw new ToolError("Supply id alone to read a beat; omit id to list metadata.");
+			const beat =
+				this.store.beats.find(beat => beat.id === args.id) ?? this.batch.beats.find(beat => beat.id === args.id);
+			if (!beat) throw new ToolError(`Unknown beat ID: ${args.id}`);
+			const { body, ...metadata } = beat;
+			text = `${JSON.stringify(metadata, null, 2)}\n\n# ${beat.title}\n\n${body}`;
+			details = { id: beat.id, sources: [...beat.sources] };
+		} else {
+			const offset = args.offset ?? 0;
+			const limit = args.limit ?? 50;
+			if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+				throw new ToolError("offset must be a nonnegative integer; limit must be an integer from 1 through 100.");
+			}
+			const committed = this.store.beats;
+			const beats: Pick<BeatRecord, "id" | "title" | "kind" | "eventTime">[] = [];
+			const end = Math.min(committed.length, offset + limit);
+			for (let index = offset; index < end; index++) {
+				const beat = committed[committed.length - 1 - index];
+				// Redact before clipping, then redact the full page for cross-field secrets.
+				const title = this.obfuscator?.obfuscate(beat.title) ?? beat.title;
+				beats.push({
+					id: beat.id,
+					title: title.length > 240 ? `${title.slice(0, 239)}…` : title,
+					kind: beat.kind,
+					eventTime: beat.eventTime,
+				});
+			}
+			details = { offset, nextOffset: end < committed.length ? end : null, total: committed.length };
+			text = JSON.stringify({ ...details, beats }, null, 2);
+		}
 		return {
 			content: [{ type: "text", text: this.obfuscator?.obfuscate(text) ?? text }],
-			details: { id: beat.id, sources: [...beat.sources] },
+			details,
 		};
 	}
 }
