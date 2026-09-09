@@ -6,10 +6,10 @@
   ...
 }:
 let
-  cfg = config.programs.omp;
+  cfg = config.programs.omomp;
 in
 {
-  options.programs.omp = {
+  options.programs.omomp = {
     enable = lib.mkEnableOption "OMP coding agent";
 
     package = lib.mkOption {
