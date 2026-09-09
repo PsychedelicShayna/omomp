@@ -74,6 +74,8 @@ export class ChronicleTool implements AgentTool<typeof chronicleSchema, Chronicl
 	readonly label = "Chronicle";
 	readonly description = chronicleDefinition.description;
 	readonly parameters = chronicleDefinition.parameters;
+	// Omitted strict flags can make providers over-fill optional arguments.
+	readonly strict = false;
 	readonly intent = "omit" as const;
 
 	constructor(
@@ -136,6 +138,7 @@ export class FinishChronicleTool implements AgentTool<typeof finishSchema, Finis
 	readonly label = "Finish Chronicle";
 	readonly description = finishDefinition.description;
 	readonly parameters = finishDefinition.parameters;
+	readonly strict = false;
 	readonly intent = "omit" as const;
 
 	constructor(
@@ -173,6 +176,7 @@ export class ReadChronicleTool implements AgentTool<typeof readSchema, ReadChron
 	readonly label = "Read Chronicle";
 	readonly description = readDefinition.description;
 	readonly parameters = readDefinition.parameters;
+	readonly strict = false;
 	readonly intent = "omit" as const;
 
 	constructor(

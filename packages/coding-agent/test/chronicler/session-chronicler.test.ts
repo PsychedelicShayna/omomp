@@ -25,6 +25,7 @@ import * as path from "node:path";
 import { Agent, type AgentMessage, type AgentPromptOptions } from "@oh-my-pi/pi-agent-core";
 import type { Api, AssistantMessage, Context, ImageContent, Model, ProviderSessionState } from "@oh-my-pi/pi-ai";
 import { createMockModel, type MockHandler, type MockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
+import { convertOpenAICodexResponsesTools } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -713,6 +714,178 @@ describe("SessionChronicler capture runtime", () => {
 		expect(passConversationText(passes[0]!)).toContain(
 			`Seeded body number ${seeded.indexOf(omittedId!)} for listing bounds.`,
 		);
+	}, 30_000);
+
+	it("normalizes nullable optional native tool arguments and clears finish carry", async () => {
+		const manager = await newSessionManager();
+		const root = chroniclerRoot(manager);
+		const seeded = await seedCommittedBeats(root, manager.getSessionId(), 55);
+		appendUser(manager, "Keep this unresolved until the next capture.");
+		await manager.flush();
+		scripts.push(ackPass({ text: "Unresolved carry to clear." }));
+		const first = startChronicler(manager, newSettings());
+		const prior = await waitForBatches(root, 2);
+		expect(prior[1]!.carry?.text).toBe("Unresolved carry to clear.");
+		await shutdown(first);
+		const older = appendUser(manager, "Record the resolution with nullable provider arguments.");
+		await Bun.sleep(2);
+		const latest = appendAssistant(manager, "The resolution is now confirmed.");
+		await manager.flush();
+		const explicitTime = "2026-01-02T03:04:05.000Z";
+		const calls: { name: string; args: Record<string, unknown> }[] = [
+			{
+				name: "chronicle",
+				args: {
+					title: "Nullable supersedes",
+					event_time: explicitTime,
+					related: [],
+					supersedes: null,
+					uncertainty: null,
+				},
+			},
+			{
+				name: "chronicle",
+				args: {
+					title: "All optional fields null",
+					event_time: null,
+					related: null,
+					supersedes: null,
+					uncertainty: null,
+				},
+			},
+			{
+				name: "chronicle",
+				args: {
+					title: "Explicit optional values",
+					event_time: explicitTime,
+					related: [seeded[0]!],
+					supersedes: seeded[1]!,
+					uncertainty: "Pending confirmation.",
+				},
+			},
+			{ name: "read_chronicle", args: { id: null, offset: null, limit: null } },
+			{ name: "read_chronicle", args: { id: seeded[0]!, offset: null, limit: null } },
+			{ name: "read_chronicle", args: { id: null, offset: 50, limit: 2 } },
+		];
+		const validCount = calls.length;
+		for (const args of [
+			{ event_time: "not-a-timestamp" },
+			{ related: ["unknown-beat"] },
+			{ supersedes: "unknown-beat" },
+			{ supersedes: "" },
+			{ uncertainty: " " },
+			{ sources: ["unknown-source"] },
+		]) {
+			calls.push({ name: "chronicle", args });
+		}
+		for (const args of [{ id: "unknown-beat" }, { offset: -1 }, { limit: 0 }, { id: seeded[0]!, offset: 0 }]) {
+			calls.push({ name: "read_chronicle", args });
+		}
+		scripts.push([
+			...calls.map(({ name, args }): MockHandler => context => ({
+				content: [
+					{
+						type: "toolCall",
+						name,
+						arguments:
+							name === "chronicle"
+								? {
+										title: "Invalid optional argument",
+										kind: "decision",
+										body: "Resolution captured through the native tool loop.",
+										topics: ["nullable"],
+										sources: receivedSourceIds(context).reverse(),
+										...args,
+									}
+								: args,
+					},
+				],
+			})),
+			finishTurn(),
+			stopTurn,
+		]);
+		const harness = startChronicler(manager, newSettings());
+		const batches = await waitForBatches(root, 3);
+		await shutdown(harness);
+		// Exercise the actual private tools through the provider's request converter.
+		const codex = getBundledModel<"openai-codex-responses">("openai-codex", "gpt-5.5");
+		if (!codex || codex.api !== "openai-codex-responses") throw new Error("Expected a bundled Codex model");
+		const wireTools = convertOpenAICodexResponsesTools(passes[1]!.agent.state.tools, codex);
+		expect(wireTools).toHaveLength(3);
+		for (const tool of wireTools) {
+			if (tool.type !== "function") throw new Error("Expected a function tool");
+			expect(tool.strict).toBe(false);
+			const parameters = tool.parameters as { required?: string[]; properties: Record<string, unknown> };
+			if (tool.name === "chronicle") {
+				expect([...(parameters.required ?? [])].sort()).toEqual(["body", "kind", "sources", "title", "topics"]);
+				expect(parameters.properties).toMatchObject({
+					event_time: { type: "string" },
+					related: { type: "array", items: { type: "string" } },
+					supersedes: { type: "string" },
+					uncertainty: { type: "string" },
+				});
+			} else if (tool.name === "read_chronicle") {
+				expect(parameters.required ?? []).toEqual([]);
+				expect(parameters.properties).toMatchObject({
+					id: { type: "string" },
+					offset: { type: "integer", minimum: 0 },
+					limit: { type: "integer", minimum: 1, maximum: 100 },
+				});
+			} else {
+				expect(tool.name).toBe(FINISH_TOOL);
+				expect(parameters.required).toEqual(["carry"]);
+				expect(parameters.properties.carry).toMatchObject({ anyOf: expect.arrayContaining([{ type: "null" }]) });
+			}
+		}
+		const results = passes[1]!.agent.state.messages.filter(message => message.role === "toolResult");
+		for (const result of results.slice(0, validCount))
+			expect(result.isError, JSON.stringify(result.content)).toBe(false);
+		expect(results.slice(validCount, calls.length).map(result => result.isError)).toEqual(
+			Array(calls.length - validCount).fill(true),
+		);
+		expect(results).toHaveLength(calls.length + 1);
+		expect(results.at(-1)!.isError).toBe(false);
+		for (const [index, offset, limit] of [
+			[3, 0, 50],
+			[5, 50, 2],
+		] as const) {
+			const text = results[index]!.content.find(content => content.type === "text");
+			if (text?.type !== "text") throw new Error("Expected listing text");
+			const listing = JSON.parse(text.text);
+			expect(listing).toMatchObject({ offset, nextOffset: offset + limit, total: 55 });
+			expect(listing.beats.map((beat: { id: string }) => beat.id)).toEqual(
+				[...seeded].reverse().slice(offset, offset + limit),
+			);
+		}
+		expect(JSON.stringify(results[4]!.content)).toContain("Seeded body number 0 for listing bounds.");
+		const committed = batches[2]!;
+		expect(committed.carry).toBeNull();
+		expect(committed.entries.map(entry => entry.id)).toEqual([older, latest]);
+		expect(committed.beats).toHaveLength(3);
+		const store = new ChroniclerStore(root, {
+			sessionId: manager.getSessionId(),
+			project: cwd,
+			model: CAPTURE_ROLE_VALUE,
+		});
+		await store.open();
+		const live = store.beats.find(beat => beat.title === "Nullable supersedes")!;
+		expect(live.eventTime).toBe(explicitTime);
+		expect(live.supersedes).toBeUndefined();
+		expect(live.uncertainty).toBeUndefined();
+		const nullable = store.beats.find(beat => beat.title === "All optional fields null")!;
+		const latestTime = committed.entries
+			.map(entry => entry.timestamp)
+			.sort((a, b) => Date.parse(b) - Date.parse(a))[0];
+		expect(nullable.eventTime).toBe(latestTime);
+		expect(nullable.related).toEqual([]);
+		expect(nullable.supersedes).toBeUndefined();
+		expect(nullable.uncertainty).toBeUndefined();
+		expect(store.beats.find(beat => beat.title === "Explicit optional values")).toMatchObject({
+			eventTime: explicitTime,
+			related: [seeded[0]!],
+			supersedes: seeded[1]!,
+			uncertainty: "Pending confirmation.",
+		});
 	}, 30_000);
 
 	/** Beat IDs the bounded context listing actually rendered. */
