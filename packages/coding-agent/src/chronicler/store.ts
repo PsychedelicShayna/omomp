@@ -483,6 +483,7 @@ export class ChroniclerStore {
 		if (this.#committedBatchIds.has(batch.id)) {
 			throw new ChroniclerCorruptionError(`batch id ${batch.id} is already committed on disk`, batch.id);
 		}
+		this.#assertBatchCurrent(batch);
 
 		const checkpoint = this.#buildCheckpoint(batch);
 		const staging = path.join(this.#beatsDir, `${STAGING_PREFIX}${batch.id}`);
@@ -495,7 +496,12 @@ export class ChroniclerStore {
 				await writeArtifact(path.join(staging, path.basename(record.path)), this.#renderBeatFile(batch.id, record));
 			}
 			await writeArtifact(path.join(staging, MANIFEST_FILE), `${JSON.stringify(checkpoint, null, "\t")}\n`);
-			await this.#publish(staging, destination, checkpoint, () => batch.revoked);
+			await this.#publish(staging, destination, checkpoint, () => {
+				if (batch.revoked) {
+					throw new Error(`Chronicler batch ${batch.id} was revoked before publication`);
+				}
+				this.#assertBatchCurrent(batch);
+			});
 		} catch (error) {
 			// The attempt's own staging is not history; only the destination is
 			// preserved. A crash (rather than a thrown failure) may leave staging
@@ -525,18 +531,17 @@ export class ChroniclerStore {
 		staging: string,
 		destination: string,
 		checkpoint: CaptureCheckpoint,
-		isRevoked: () => boolean,
+		assertPublishable: () => void,
 	): Promise<void> {
 		// `rename` would silently replace an empty destination directory, so a
 		// batch-identity collision has to be rejected before it is attempted.
 		if (await this.#pathExists(destination)) {
 			throw new Error(`Chronicler publication destination ${destination} already exists; refusing to overwrite it`);
 		}
-		// Revocation can land while the precheck above awaits, so the last look
-		// must sit immediately before the rename: that is the point of no return.
-		if (isRevoked()) {
-			throw new Error(`Chronicler batch ${checkpoint.batchId} was revoked before publication`);
-		}
+		// Revocation or a competing commit can land while the precheck above
+		// awaits, so the last look must sit immediately before the rename: that is
+		// the point of no return.
+		assertPublishable();
 		try {
 			await fs.rename(staging, destination);
 			return;
@@ -846,9 +851,11 @@ export class ChroniclerStore {
 		}
 		for (const entry of checkpoint.entries) {
 			const existing = this.#sources.get(entry.id);
-			if (existing && !sameSource(existing, entry)) {
+			if (existing) {
 				throw this.#halt(
-					`conflicting manifests describe entry ${entry.id} differently`,
+					sameSource(existing, entry)
+						? `entry ${entry.id} is covered by more than one committed batch`
+						: `conflicting manifests describe entry ${entry.id} differently`,
 					path.join(this.#beatsDir, checkpoint.batchId, MANIFEST_FILE),
 				);
 			}
@@ -1097,5 +1104,22 @@ export class ChroniclerStore {
 		if (this.#committedBatches.has(batch)) throw new Error(`Chronicler batch ${batch.id} is already committed`);
 		if (batch.revoked) throw new Error(`Chronicler batch ${batch.id} was revoked`);
 		if (batch.finalized) throw new Error(`Chronicler batch ${batch.id} is finalized; no further beats may be staged`);
+		this.#assertBatchCurrent(batch);
+	}
+
+	/**
+	 * A batch reserves nothing on disk, so another batch may have committed the
+	 * same source entries between `beginBatch` and this call. Only the batch's
+	 * own entries are checked: beats and carry stay free to cite evidence that
+	 * earlier batches already committed.
+	 */
+	#assertBatchCurrent(batch: CaptureBatch): void {
+		for (const entry of batch.entries) {
+			if (this.#processed.has(entry.id)) {
+				throw new Error(
+					`Chronicler batch ${batch.id} is stale: entry ${entry.id} was already committed by another batch`,
+				);
+			}
+		}
 	}
 }

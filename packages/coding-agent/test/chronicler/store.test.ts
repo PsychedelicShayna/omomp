@@ -466,6 +466,150 @@ describe("ChroniclerStore transactions", () => {
 		expect(await allFiles()).toEqual(before);
 	});
 
+	it("halts when two committed manifests describe the same source entry differently", async () => {
+		const seed = await openStore();
+		const original = await commit(
+			seed,
+			[source("entry-1", null, 0)],
+			[beatInput({ title: "Original entry", sources: ["entry-1"] })],
+		);
+		const manifest = await readManifest(original.id);
+
+		// A second internally valid, zero-beat manifest that recovers the same
+		// entry id with different lineage. Neither the parentId nor the timestamp
+		// discriminator may be silently reconciled away.
+		const cloneId = Bun.randomUUIDv7();
+		const cloneManifest = path.join(root, "beats", cloneId, "COMMIT.json");
+		await fs.mkdir(path.join(root, "beats", cloneId), { recursive: true });
+		const writeClone = async (entry: CaptureSource): Promise<void> => {
+			await Bun.write(
+				cloneManifest,
+				JSON.stringify({
+					...manifest,
+					batchId: cloneId,
+					committedAt: new Date(Date.parse(manifest.committedAt) + 1000).toISOString(),
+					entries: [entry],
+					beats: [],
+					carry: null,
+				}),
+			);
+		};
+
+		// Conflicting parentId, same timestamp.
+		await writeClone({ id: "entry-1", parentId: "entry-forked", timestamp: manifest.entries[0]!.timestamp });
+		const before = await allFiles();
+		await expectHaltedOpen(newStore());
+		expect(await allFiles()).toEqual(before);
+
+		// Same parentId, conflicting timestamp.
+		await writeClone({ id: "entry-1", parentId: null, timestamp: source("entry-1", null, 30).timestamp });
+		expect(await allFiles()).toEqual(before);
+		await expectHaltedOpen(newStore());
+		expect(await allFiles()).toEqual(before);
+	});
+
+	it("halts when two committed manifests cover the same entry even with identical metadata", async () => {
+		const seed = await openStore();
+		const original = await commit(
+			seed,
+			[source("entry-1", null, 0)],
+			[beatInput({ title: "Original entry", sources: ["entry-1"] })],
+		);
+		const manifest = await readManifest(original.id);
+
+		// A second, byte-identical coverage claim for entry-1. Coverage is
+		// single-owner: even a perfect duplicate is corruption, not a merge.
+		const cloneId = Bun.randomUUIDv7();
+		await fs.mkdir(path.join(root, "beats", cloneId), { recursive: true });
+		await Bun.write(
+			path.join(root, "beats", cloneId, "COMMIT.json"),
+			JSON.stringify({
+				...manifest,
+				batchId: cloneId,
+				committedAt: new Date(Date.parse(manifest.committedAt) + 1000).toISOString(),
+				entries: [{ ...manifest.entries[0]! }],
+				beats: [],
+				carry: null,
+			}),
+		);
+		const before = await allFiles();
+
+		await expectHaltedOpen(newStore());
+
+		expect(await allFiles()).toEqual(before);
+	});
+
+	it("rejects a stale pre-begun batch once another batch commits its entries", async () => {
+		const store = await openStore();
+		const sources = [source("entry-1", null, 0), source("entry-2", "entry-1", 1)];
+		// Two batches begun over the same entries before either commits: at
+		// beginBatch time neither entry is yet covered.
+		const first = store.beginBatch(sources);
+		const stale = store.beginBatch(sources);
+		store.stageBeat(first, beatInput({ title: "Won the race", sources: ["entry-1"] }));
+		first.finalized = true;
+		await store.commitBatch(first);
+
+		// Now the entries are covered, so the stale batch cannot even stage.
+		expect(() => store.stageBeat(stale, beatInput({ title: "Too late", sources: ["entry-2"] }))).toThrow();
+
+		// A zero-beat completion of the stale batch is rejected at commit and
+		// double-counts no coverage: an ordinary error, not corruption.
+		stale.finalized = true;
+		let failure: unknown;
+		await store.commitBatch(stale).catch((error: unknown) => {
+			failure = error;
+		});
+		expect(failure).toBeDefined();
+		expect(isChroniclerCorruption(failure)).toBe(false);
+
+		expect(await committedBatchIds()).toEqual([first.id]);
+		expect(await stagingDirs()).toEqual([]);
+		expect(store.beats.map(beat => beat.title)).toEqual(["Won the race"]);
+		expect([...store.processedEntryIds].sort()).toEqual(["entry-1", "entry-2"]);
+
+		// The store is still usable for genuinely new entries.
+		const next = await commit(
+			store,
+			[source("entry-3", "entry-2", 2)],
+			[beatInput({ title: "Fresh", sources: ["entry-3"] })],
+		);
+		expect(await committedBatchIds()).toEqual([first.id, next.id].sort());
+		expect([...store.processedEntryIds].sort()).toEqual(["entry-1", "entry-2", "entry-3"]);
+	});
+
+	it("allows a later beat and carry to cite older committed evidence", async () => {
+		const store = await openStore();
+		const first = await commit(
+			store,
+			[source("entry-1", null, 0)],
+			[beatInput({ title: "First evidence", sources: ["entry-1"] })],
+		);
+
+		// A new pass covers only its own new entry, but its beat and carry may
+		// legitimately reuse the older committed entry as cited evidence.
+		const followup = await commit(
+			store,
+			[source("entry-2", "entry-1", 1)],
+			[beatInput({ title: "Builds on the first", sources: ["entry-1", "entry-2"] })],
+			{ sources: ["entry-1"], text: "still relevant" },
+		);
+
+		expect(await committedBatchIds()).toEqual([first.id, followup.id].sort());
+		expect(store.beats.map(beat => beat.title).sort()).toEqual(["Builds on the first", "First evidence"]);
+		const reused = store.beats.find(beat => beat.title === "Builds on the first");
+		expect(reused?.sources).toEqual(["entry-1", "entry-2"]);
+		expect(store.carry).toEqual({ sources: ["entry-1"], text: "still relevant" });
+		expect([...store.processedEntryIds].sort()).toEqual(["entry-1", "entry-2"]);
+
+		const reopened = await openStore();
+		expect(reopened.carry).toEqual({ sources: ["entry-1"], text: "still relevant" });
+		expect(reopened.beats.find(beat => beat.title === "Builds on the first")?.sources).toEqual([
+			"entry-1",
+			"entry-2",
+		]);
+	});
+
 	it("refuses to overwrite an occupied publication destination", async () => {
 		const store = await openStore();
 		const batch = stage(
