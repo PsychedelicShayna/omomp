@@ -7,7 +7,169 @@ import { kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { createAssistantMessage, createUserMessage } from "./helpers";
 
+function createHeldSteeringAgent(interruptMode: "immediate" | "wait") {
+	const started = Promise.withResolvers<AbortSignal>();
+	const release = Promise.withResolvers<void>();
+	const aborted = Promise.withResolvers<void>();
+	const tool: AgentTool = {
+		name: "hold",
+		label: "Hold",
+		description: "Wait for release",
+		parameters: type({}),
+		interruptible: true,
+		async execute(_id, _params, signal) {
+			if (!signal) throw new Error("Expected tool signal");
+			const onAbort = () => aborted.resolve();
+			signal.addEventListener("abort", onAbort, { once: true });
+			started.resolve(signal);
+			try {
+				await Promise.race([release.promise, aborted.promise]);
+				signal.throwIfAborted();
+				return { content: [{ type: "text", text: "released normally" }] };
+			} finally {
+				signal.removeEventListener("abort", onAbort);
+			}
+		},
+	};
+	const mock = createMockModel({
+		responses: [
+			{ content: [{ type: "toolCall", id: "held", name: "hold", arguments: {} }] },
+			{ content: ["continued"] },
+			{ content: ["finished"] },
+		],
+	});
+	const agent = new Agent({
+		initialState: { model: mock.model, tools: [tool] },
+		streamFn: mock.stream,
+		interruptMode,
+		steeringMode: "one-at-a-time",
+	});
+	return { agent, mock, started, release, aborted };
+}
+
 describe("Agent", () => {
+	it("delivers wait steering at the tool boundary without aborting under global immediate", async () => {
+		const { agent, mock, started, release } = createHeldSteeringAgent("immediate");
+		const run = agent.prompt("start");
+		const signal = await started.promise;
+		const concern = createUserMessage("concern");
+		try {
+			agent.steer(concern, { interruptMode: "wait" });
+			const snapshot = [...agent.peekSteeringQueue()];
+			agent.clearSteeringQueue();
+			agent.replaceQueues(snapshot, []);
+			// A macrotask must run while a soft-only queue is waiting: a resolved
+			// event-wait promise would otherwise spin indefinitely in microtasks.
+			await Bun.sleep(0);
+			expect(signal.aborted).toBe(false);
+			expect(mock.calls).toHaveLength(1);
+		} finally {
+			release.resolve();
+			await run;
+		}
+		expect(mock.calls[1].context.messages).toContainEqual(concern);
+		expect(mock.calls[1].context.messages).toContainEqual(
+			expect.objectContaining({
+				role: "toolResult",
+				isError: false,
+				content: [{ type: "text", text: "released normally" }],
+			}),
+		);
+	});
+
+	it("keeps the active wait policy when the global setting changes while a tool is held", async () => {
+		const { agent, mock, started, release } = createHeldSteeringAgent("wait");
+		const run = agent.prompt("start");
+		const signal = await started.promise;
+		const message = createUserMessage("new default steering");
+		try {
+			agent.setInterruptMode("immediate");
+			agent.steer(message);
+			// The setting applies to the next run. Both this loop and its waiter
+			// must retain wait policy, allowing the timer and tool to finish.
+			await Bun.sleep(0);
+			expect(signal.aborted).toBe(false);
+			expect(mock.calls).toHaveLength(1);
+		} finally {
+			release.resolve();
+			await run;
+		}
+		expect(mock.calls[1].context.messages).toContainEqual(message);
+	});
+
+	it("interrupts a held tool for immediate steering under global wait", async () => {
+		const { agent, mock, started, release } = createHeldSteeringAgent("wait");
+		const run = agent.prompt("start");
+		const signal = await started.promise;
+		const blocker = createUserMessage("blocker");
+		try {
+			agent.steer(blocker, { interruptMode: "immediate" });
+			await Bun.sleep(0);
+			expect(signal.aborted).toBe(true);
+			await run;
+			expect(mock.calls[1].context.messages).toContainEqual(blocker);
+		} finally {
+			release.resolve();
+			agent.abort();
+			await run;
+		}
+	});
+
+	it("lets an immediate message behind wait steering interrupt without reordering one-at-a-time delivery", async () => {
+		const { agent, mock, started, release } = createHeldSteeringAgent("wait");
+		const run = agent.prompt("start");
+		const signal = await started.promise;
+		const concern = createUserMessage("concern");
+		const blocker = createUserMessage("blocker");
+		try {
+			agent.steer(concern, { interruptMode: "wait" });
+			await Bun.sleep(0);
+			expect(signal.aborted).toBe(false);
+			agent.steer(blocker, { interruptMode: "immediate" });
+			await Bun.sleep(0);
+			expect(signal.aborted).toBe(true);
+			await run;
+			expect(mock.calls[1].context.messages).toContainEqual(concern);
+			expect(mock.calls[1].context.messages).not.toContainEqual(blocker);
+			expect(mock.calls[2].context.messages).toContainEqual(blocker);
+		} finally {
+			release.resolve();
+			agent.abort();
+			await run;
+		}
+	});
+
+	it("retains wait steering on external abort and delivers it on continue", async () => {
+		const { agent, mock, started, release } = createHeldSteeringAgent("immediate");
+		const run = agent.prompt("start");
+		await started.promise;
+		const concern = createUserMessage("retained concern");
+		try {
+			agent.steer(concern, { interruptMode: "wait" });
+			agent.abort();
+			await run;
+			expect(agent.peekSteeringQueue()).toEqual([concern]);
+			const resumedCallIndex = mock.calls.length;
+			await agent.continue();
+			const resumedUserMessages = mock.calls[resumedCallIndex].context.messages
+				.filter(message => message.role === "user")
+				.map(message =>
+					typeof message.content === "string"
+						? message.content
+						: message.content
+								.filter(block => block.type === "text")
+								.map(block => block.text)
+								.join(""),
+				);
+			expect(resumedUserMessages).toContain("retained concern");
+			expect(agent.peekSteeringQueue()).toEqual([]);
+		} finally {
+			release.resolve();
+			agent.abort();
+			await run;
+		}
+	});
+
 	it("should support steering message queueing", async () => {
 		const agent = new Agent();
 
