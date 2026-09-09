@@ -29,6 +29,8 @@ export interface HistoryFormatOptions {
 	includeThinking?: boolean;
 	/** Render tool intent comment before tool call lines. */
 	includeToolIntent?: boolean;
+	/** Retain call/result correlation IDs when entries are rendered independently. */
+	includeToolCallIds?: boolean;
 	/** Render watched-session roles as inline `**agent**:` / `**user**:` labels (collapsing consecutive same-role messages) instead of `## ` headings, so a primary transcript embedded inside an advisor turn stays visually distinct. */
 	watchedRoles?: boolean;
 	/**
@@ -308,8 +310,10 @@ function toolCallLine(
 	expandEditDiffs?: boolean,
 	expandToolIO?: boolean,
 	transformExpandedToolIO?: (text: string) => string,
+	toolCallId?: string,
 ): string {
-	const head = `→ ${name}(${formatToolCallPrimaryArg(name, args)})`;
+	const correlation = toolCallId === undefined ? "" : ` [call ${JSON.stringify(toolCallId)}]`;
+	const head = `→ ${name}(${formatToolCallPrimaryArg(name, args)})${correlation}`;
 	const rawResultText = result ? contentToText(result.content) : undefined;
 	const visibleResultText =
 		rawResultText === undefined ? undefined : (transformExpandedToolIO?.(rawResultText) ?? rawResultText);
@@ -505,6 +509,7 @@ export function formatSessionHistoryMarkdown(messages: unknown[], opts?: History
 								opts?.expandEditDiffs,
 								opts?.expandToolIO,
 								opts?.transformExpandedToolIO,
+								opts?.includeToolCallIds ? block.id : undefined,
 							),
 						);
 					} else if (opts?.includeThinking && block.type === "thinking" && block.thinking.trim()) {
@@ -538,6 +543,7 @@ export function formatSessionHistoryMarkdown(messages: unknown[], opts?: History
 						opts?.expandEditDiffs,
 						opts?.expandToolIO,
 						opts?.transformExpandedToolIO,
+						opts?.includeToolCallIds ? msg.toolCallId : undefined,
 					),
 					"",
 				);

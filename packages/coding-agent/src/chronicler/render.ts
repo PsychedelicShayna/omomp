@@ -29,6 +29,7 @@ export function renderChronicleDelta(
 				transcript: formatSessionHistoryMarkdown([entry.message], {
 					...ADVISOR_RENDER_OPTIONS,
 					includeThinking: opts.includeThinking,
+					includeToolCallIds: true,
 				}).trim(),
 			}),
 		)
