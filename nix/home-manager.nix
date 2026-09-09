@@ -6,12 +6,12 @@
   ...
 }:
 let
-  cfg = config.programs.omp;
+  cfg = config.programs.omomp;
   yaml = pkgs.formats.yaml { };
   configFile = yaml.generate "omp-config.yml" cfg.settings;
 in
 {
-  options.programs.omp = {
+  options.programs.omomp = {
     enable = lib.mkEnableOption "OMP coding agent";
 
     package = lib.mkOption {
@@ -50,7 +50,7 @@ in
     # break every launch. Copy a writable regular file instead. The DAG entry
     # is written literally (rather than via `lib.hm.dag.entryAfter`) so the
     # home-manager-free module evaluation in `flake.nix` keeps working.
-    home.activation.ompConfig = lib.mkIf (cfg.settings != null) {
+    home.activation.omompConfig = lib.mkIf (cfg.settings != null) {
       before = [ ];
       after = [ "writeBoundary" ];
       data = ''

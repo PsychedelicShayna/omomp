@@ -74,7 +74,7 @@ Flake consumers can use `packages.<system>.omp`, `overlays.default`, `nixosModul
 
   # In your Home Manager module:
   imports = [ inputs.omp.homeManagerModules.default ];
-  programs.omp = {
+  programs.omomp = {
     enable = true;
     settings.startup.quiet = true;
   };

@@ -111,7 +111,7 @@
       apps = forAllSystems (system: {
         default = {
           type = "app";
-          program = "${self.packages.${system}.default}/bin/omp";
+          program = "${self.packages.${system}.default}/bin/omomp";
           meta.description = "Run OMP";
         };
         omp = self.apps.${system}.default;
@@ -148,8 +148,8 @@
               }
               self.homeManagerModules.default
               {
-                programs.omp.enable = true;
-                programs.omp.settings.startup.quiet = true;
+                programs.omomp.enable = true;
+                programs.omomp.settings.startup.quiet = true;
               }
             ];
           };
@@ -163,12 +163,12 @@
                 };
               }
               self.nixosModules.default
-              { programs.omp.enable = true; }
+              { programs.omomp.enable = true; }
             ];
           };
           modulesEvaluate =
             assert builtins.elem self.packages.${system}.default homeManagerEvaluation.config.home.packages;
-            assert homeManagerEvaluation.config.home.activation ? ompConfig;
+            assert homeManagerEvaluation.config.home.activation ? omompConfig;
             assert builtins.elem self.packages.${system}.default
               nixosEvaluation.config.environment.systemPackages;
             pkgs.runCommand "omp-module-evaluation" { } "touch $out";
@@ -192,7 +192,7 @@
       formatter = forAllSystems (system: (pkgsFor system).nixfmt);
 
       overlays.default = _final: previous: {
-        omp = self.packages.${previous.stdenv.hostPlatform.system}.default;
+        omomp = self.packages.${previous.stdenv.hostPlatform.system}.default;
       };
 
       homeManagerModules.default = import ./nix/home-manager.nix { inherit self; };

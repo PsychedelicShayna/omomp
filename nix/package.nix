@@ -74,7 +74,7 @@ let
   };
 in
 stdenv.mkDerivation {
-  pname = "omp";
+  pname = "omomp";
   inherit (packageJson) version;
   src = source;
 
@@ -174,9 +174,9 @@ stdenv.mkDerivation {
   installPhase = ''
     runHook preInstall
 
-    install -Dm755 packages/coding-agent/dist/omp "$out/bin/omp"
-    install -Dm644 LICENSE "$out/share/doc/omp/LICENSE"
-    install -Dm644 THIRD-PARTY-NOTICES.txt "$out/share/doc/omp/THIRD-PARTY-NOTICES.txt"
+    install -Dm755 packages/coding-agent/dist/omp "$out/bin/omomp"
+    install -Dm644 LICENSE "$out/share/doc/omomp/LICENSE"
+    install -Dm644 THIRD-PARTY-NOTICES.txt "$out/share/doc/omomp/THIRD-PARTY-NOTICES.txt"
 
     # The addon is gzip-compressed inside the compiled binary, so the store
     # paths it links against are invisible to the output reference scanner.
@@ -201,7 +201,7 @@ stdenv.mkDerivation {
   # inert shebang. Remove its hash before Nix scans output references; this
   # runs before Darwin's binary-signing fixup hook.
   preFixup = ''
-    remove-references-to -t ${bun} "$out/bin/omp"
+    remove-references-to -t ${bun} "$out/bin/omomp"
   '';
 
   # Prebuilt addons that omp bun-installs into its cache at first use
@@ -218,11 +218,11 @@ stdenv.mkDerivation {
   # soname from the already-loaded set, regardless of the addon's own DT_RUNPATH.
   # stdenv.cc.cc.lib is already in buildInputs, so the autoPatchelfHook pass that
   # follows resolves the new dependency and sets the RPATH. patchelf must run before
-  # wrapProgram: the wrapper replaces $out/bin/omp with a script and moves the ELF
-  # to $out/bin/.omp-wrapped.
+  # wrapProgram: the wrapper replaces $out/bin/omomp with a script and moves the
+  # ELF to $out/bin/.omomp-wrapped.
   postFixup = lib.optionalString stdenv.hostPlatform.isLinux ''
-    patchelf --add-needed libstdc++.so.6 "$out/bin/omp"
-    wrapProgram "$out/bin/omp" \
+    patchelf --add-needed libstdc++.so.6 "$out/bin/omomp"
+    wrapProgram "$out/bin/omomp" \
       --set-default OMP_NATIVE_LIBRARY_PATH "${lib.makeLibraryPath runtimeNativeLibraries}"
   '';
 
@@ -237,9 +237,9 @@ stdenv.mkDerivation {
   # section address. preInstallCheck runs after every fixupPhase hook, including
   # the autoPatchelfHook pass that follows postFixup, so it is the last point at
   # which the field can be corrected; wrapProgram moved the real ELF to
-  # `.omp-wrapped`.
+  # `.omomp-wrapped`.
   preInstallCheck = lib.optionalString stdenv.hostPlatform.isLinux ''
-    bun ${../scripts/fix-dt-verdef.ts} "$out/bin/.omp-wrapped"
+    bun ${../scripts/fix-dt-verdef.ts} "$out/bin/.omomp-wrapped"
   '';
 
   doInstallCheck = true;
@@ -249,19 +249,19 @@ stdenv.mkDerivation {
     # under `set -o pipefail` (grep -q's exit status wins), which hid the
     # loader SIGSEGV in issue #9881. With a variable, errexit surfaces omp's
     # real exit status and stderr in the build log.
-    smokeOutput="$(HOME="$TMPDIR" "$out/bin/omp" --smoke-test)"
+    smokeOutput="$(HOME="$TMPDIR" "$out/bin/omomp" --smoke-test)"
     grep -q "smoke-test: ok" <<<"$smokeOutput"
-    BUN_BE_BUN=1 "$out/bin/omp" -e \
+    BUN_BE_BUN=1 "$out/bin/omomp" -e \
       'if (Bun.version !== "${bun.version}" || typeof Bun.Image !== "function") process.exit(1)'
     ${lib.optionalString stdenv.hostPlatform.isLinux ''
       # The addons are dlopen'd, so prove the advertised directories actually
       # resolve the libraries rather than merely carrying a plausible string.
-      env -u LD_LIBRARY_PATH BUN_BE_BUN=1 "$out/bin/omp" -e \
+      env -u LD_LIBRARY_PATH BUN_BE_BUN=1 "$out/bin/omomp" -e \
         'const {dlopen}=require("bun:ffi");const dirs=(process.env.OMP_NATIVE_LIBRARY_PATH||"").split(":").filter(Boolean);const need={"libstdc++.so.6":{__cxa_demangle:{args:["ptr","ptr","ptr","ptr"],returns:"ptr"}},"libgcc_s.so.1":{_Unwind_Backtrace:{args:["ptr","ptr"],returns:"i32"}}};for(const lib of Object.keys(need)){let ok=false;for(const d of dirs){try{dlopen(d+"/"+lib,need[lib]);ok=true;break}catch(e){}}if(!ok){console.error("unresolved: "+lib);process.exit(1)}}'
       # The libstdc++ preload (see postFixup) must survive: without it addons the
       # main process dlopen's directly fail to resolve libstdc++.so.6 on NixOS.
-      # wrapProgram moved the real ELF to .omp-wrapped.
-      patchelf --print-needed "$out/bin/.omp-wrapped" | grep -q '^libstdc++\.so\.6$'
+      # wrapProgram moved the real ELF to .omomp-wrapped.
+      patchelf --print-needed "$out/bin/.omomp-wrapped" | grep -q '^libstdc++\.so\.6$'
     ''}
     runHook postInstallCheck
   '';
@@ -271,7 +271,7 @@ stdenv.mkDerivation {
     homepage = "https://omp.sh";
     changelog = "https://github.com/can1357/oh-my-pi/releases/tag/v${packageJson.version}";
     license = lib.licenses.mit;
-    mainProgram = "omp";
+    mainProgram = "omomp";
     platforms = [
       "aarch64-darwin"
       "aarch64-linux"
