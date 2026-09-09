@@ -5,6 +5,7 @@ import { isEnoent, logger } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
 import { expandAtImports } from "../discovery/at-imports";
 import { BUILTIN_TOOL_NAMES, normalizeToolNames } from "../tools/builtin-names";
+import { ADVISOR_DEFAULT_BUDGET_PER_UPDATE, ADVISOR_MAX_BUDGET_PER_UPDATE } from "./emission-guard";
 import { collectConfigCandidates } from "./watchdog";
 
 /**
@@ -29,6 +30,11 @@ export interface AdvisorConfig {
 	 *  stays in the roster but its runtime is never built — it shows `○` in
 	 *  the status line and `/advisor status` rather than disappearing. */
 	enabled?: boolean;
+	/**
+	 * Per-advisor maximum non-blocker advice notes accepted per advisor prompt
+	 * update (default `4`). Blockers are exempt from the budget.
+	 */
+	maxNotesPerUpdate?: number;
 }
 
 /**
@@ -50,6 +56,7 @@ export type AdvisorRuntimeStatus = "running" | "paused" | "quota_exhausted" | "e
 export interface DiscoveredAdvisors {
 	advisors: AdvisorConfig[];
 	sharedInstructions: string | undefined;
+	sharedMaxNotesPerUpdate?: number;
 }
 
 const advisorEntrySchema = type({
@@ -59,12 +66,28 @@ const advisorEntrySchema = type({
 	"instructions?": "string",
 	"systemPrompt?": "string",
 	"enabled?": "boolean",
+	"maxNotesPerUpdate?": "number",
 });
 
 const watchdogYamlSchema = type({
 	"instructions?": "string",
+	"maxNotesPerUpdate?": "number",
 	"advisors?": advisorEntrySchema.array(),
 });
+
+/** Resolve the non-blocker budget from advisor, shared, and settings precedence. */
+export function resolveAdvisorMaxNotesPerUpdate(
+	advisorBudget: number | undefined,
+	sharedBudget: number | undefined,
+	settingsBudget: number | undefined,
+): number {
+	const clamp = (value: unknown): number | undefined =>
+		typeof value === "number" && Number.isFinite(value) && value >= 1
+			? Math.min(ADVISOR_MAX_BUDGET_PER_UPDATE, Math.trunc(value))
+			: undefined;
+
+	return clamp(advisorBudget) ?? clamp(sharedBudget) ?? clamp(settingsBudget) ?? ADVISOR_DEFAULT_BUDGET_PER_UPDATE;
+}
 
 /**
  * Normalize an advisor name into a filesystem-/id-safe slug used for its
@@ -142,7 +165,7 @@ export async function discoverAdvisorConfigs(cwd: string, agentDir?: string): Pr
 	const items = await collectConfigCandidates(cwd, agentDir, ["WATCHDOG.yml", "WATCHDOG.yaml"]);
 	const advisors = new Map<string, AdvisorConfig>();
 	const sharedParts: string[] = [];
-
+	let sharedMaxNotesPerUpdate: number | undefined;
 	for (const item of items) {
 		let parsed: unknown;
 		try {
@@ -166,6 +189,14 @@ export async function discoverAdvisorConfigs(cwd: string, agentDir?: string): Pr
 			if (expanded) sharedParts.push(expanded);
 		}
 
+		if (
+			typeof result.maxNotesPerUpdate === "number" &&
+			Number.isFinite(result.maxNotesPerUpdate) &&
+			result.maxNotesPerUpdate >= 1
+		) {
+			sharedMaxNotesPerUpdate = Math.trunc(result.maxNotesPerUpdate);
+		}
+
 		for (const entry of result.advisors ?? []) {
 			const slug = slugifyAdvisorName(entry.name);
 			const instructions = entry.instructions?.trim()
@@ -178,6 +209,12 @@ export async function discoverAdvisorConfigs(cwd: string, agentDir?: string): Pr
 				instructions,
 				systemPrompt: entry.systemPrompt,
 				enabled: entry.enabled,
+				maxNotesPerUpdate:
+					typeof entry.maxNotesPerUpdate === "number" &&
+					Number.isFinite(entry.maxNotesPerUpdate) &&
+					entry.maxNotesPerUpdate >= 1
+						? Math.trunc(entry.maxNotesPerUpdate)
+						: undefined,
 			});
 		}
 	}
@@ -185,6 +222,7 @@ export async function discoverAdvisorConfigs(cwd: string, agentDir?: string): Pr
 	return {
 		advisors: [...advisors.values()],
 		sharedInstructions: sharedParts.length > 0 ? sharedParts.join("\n\n") : undefined,
+		sharedMaxNotesPerUpdate,
 	};
 }
 
@@ -199,6 +237,7 @@ export type AdvisorConfigScope = "project" | "user";
  */
 export interface WatchdogConfigDoc {
 	instructions?: string;
+	maxNotesPerUpdate?: number;
 	advisors: AdvisorConfig[];
 }
 
@@ -265,10 +304,20 @@ export async function loadWatchdogConfigFile(filePath: string): Promise<Watchdog
 		if (a.instructions?.trim()) advisor.instructions = a.instructions;
 		if (a.systemPrompt !== undefined) advisor.systemPrompt = a.systemPrompt;
 		if (a.enabled !== undefined) advisor.enabled = a.enabled;
+		if (typeof a.maxNotesPerUpdate === "number" && Number.isFinite(a.maxNotesPerUpdate) && a.maxNotesPerUpdate >= 1) {
+			advisor.maxNotesPerUpdate = Math.trunc(a.maxNotesPerUpdate);
+		}
 		return advisor;
 	});
 	const doc: WatchdogConfigDoc = { advisors };
 	if (result.instructions?.trim()) doc.instructions = result.instructions;
+	if (
+		typeof result.maxNotesPerUpdate === "number" &&
+		Number.isFinite(result.maxNotesPerUpdate) &&
+		result.maxNotesPerUpdate >= 1
+	) {
+		doc.maxNotesPerUpdate = Math.trunc(result.maxNotesPerUpdate);
+	}
 	return doc;
 }
 
@@ -304,6 +353,13 @@ function appendYamlString(lines: string[], indent: string, key: string, value: s
 export function serializeWatchdogConfig(doc: WatchdogConfigDoc): string {
 	const lines: string[] = [];
 	if (doc.instructions?.trim()) appendYamlString(lines, "", "instructions", doc.instructions);
+	if (
+		typeof doc.maxNotesPerUpdate === "number" &&
+		Number.isFinite(doc.maxNotesPerUpdate) &&
+		doc.maxNotesPerUpdate >= 1
+	) {
+		lines.push(`maxNotesPerUpdate: ${Math.trunc(doc.maxNotesPerUpdate)}`);
+	}
 	if (doc.advisors.length > 0) {
 		lines.push("advisors:");
 		for (const advisor of doc.advisors) {
@@ -326,6 +382,13 @@ export function serializeWatchdogConfig(doc: WatchdogConfigDoc): string {
 				appendYamlString(lines, "    ", "systemPrompt", advisor.systemPrompt);
 			}
 			if (advisor.enabled !== undefined) lines.push(`    enabled: ${advisor.enabled}`);
+			if (
+				typeof advisor.maxNotesPerUpdate === "number" &&
+				Number.isFinite(advisor.maxNotesPerUpdate) &&
+				advisor.maxNotesPerUpdate >= 1
+			) {
+				lines.push(`    maxNotesPerUpdate: ${Math.trunc(advisor.maxNotesPerUpdate)}`);
+			}
 		}
 	}
 	return lines.length === 0 ? "" : `${lines.join("\n")}\n`;
