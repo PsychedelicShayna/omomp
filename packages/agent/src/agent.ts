@@ -129,8 +129,8 @@ export interface AgentOptions {
 
 	/**
 	 * When to interrupt tool execution for steering messages.
-	 * - "immediate": check after each tool call (default)
-	 * - "wait": defer steering until the current turn completes
+	 * - "immediate": interrupt running interruptible tools (default)
+	 * - "wait": deliver at the next tool-batch boundary without interrupting tools
 	 */
 	interruptMode?: "immediate" | "wait";
 
@@ -374,6 +374,8 @@ export class Agent {
 	#transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
 	#transformProviderContext?: (context: Context, model: Model) => Context | Promise<Context>;
 	#steeringQueue: AgentMessage[] = [];
+	// Retain policy by identity across queue snapshots/restores without retaining messages.
+	#steeringInterruptModes = new WeakMap<AgentMessage, "immediate" | "wait">();
 	#followUpQueue: AgentMessage[] = [];
 	#steeringWaiters = new Set<() => void>();
 
@@ -992,9 +994,11 @@ export class Agent {
 
 	/**
 	 * Queue a steering message to interrupt the agent mid-run.
-	 * Delivered after current tool execution, skips remaining tools.
+	 * Delivered at the next tool boundary; the override controls in-flight interruption.
 	 */
-	steer(m: AgentMessage) {
+	steer(m: AgentMessage, options?: { interruptMode?: "immediate" | "wait" }) {
+		if (options?.interruptMode === undefined) this.#steeringInterruptModes.delete(m);
+		else this.#steeringInterruptModes.set(m, options.interruptMode);
 		this.#steeringQueue.push(m);
 		this.#notifySteeringWaiters();
 	}
@@ -1110,14 +1114,28 @@ export class Agent {
 		return this.#runningPrompt ?? Promise.resolve();
 	}
 
+	#queuedSteeringInterruptMode(): "immediate" | "wait" | undefined {
+		let hasDefault = false;
+		for (const message of this.#steeringQueue) {
+			const mode = this.#steeringInterruptModes.get(message);
+			if (mode === "immediate") return "immediate";
+			if (mode === undefined) hasDefault = true;
+		}
+		return hasDefault ? undefined : "wait";
+	}
+
 	/**
-	 * Wait for a steering message without consuming the steering queue.
+	 * Wait for interrupting steering or a queue change without consuming messages.
 	 *
 	 * The signal releases the waiter when the prompt ends, so an in-flight
 	 * tool watcher never survives the tool batch that owns it.
 	 */
-	#waitForSteeringMessages(signal?: AbortSignal): Promise<void> {
-		if (this.#steeringQueue.length > 0 || signal?.aborted) return Promise.resolve();
+	#waitForSteeringMessages(interruptMode: "immediate" | "wait", signal?: AbortSignal): Promise<void> {
+		if (
+			signal?.aborted ||
+			(this.#steeringQueue.length > 0 && (this.#queuedSteeringInterruptMode() ?? interruptMode) === "immediate")
+		)
+			return Promise.resolve();
 		const { promise, resolve } = Promise.withResolvers<void>();
 		const onAbort = (): void => resolve();
 		this.#steeringWaiters.add(resolve);
@@ -1407,6 +1425,8 @@ export class Agent {
 			return refreshToolChoiceForActiveTools(options?.toolChoice, this.#state.tools);
 		};
 
+		// The watcher and loop must use the same run policy, even if settings change mid-run.
+		const runInterruptMode = this.#interruptMode;
 		const config: AgentLoopConfig = {
 			model,
 			reasoning,
@@ -1419,7 +1439,7 @@ export class Agent {
 			repetitionPenalty: this.#repetitionPenalty,
 			serviceTier: this.#serviceTier,
 			hideThinkingSummary: this.#hideThinkingSummary,
-			interruptMode: this.#interruptMode,
+			interruptMode: runInterruptMode,
 			sessionId: this.#sessionId,
 			deadline: this.#deadline,
 			promptCacheKey: this.#promptCacheKey,
@@ -1497,6 +1517,7 @@ export class Agent {
 				if (this.#steeringQueue.length === 0) {
 					return { queued: false };
 				}
+				const interruptMode = this.#queuedSteeringInterruptMode();
 				const messageCount = this.#steeringMode === "one-at-a-time" ? 1 : this.#steeringQueue.length;
 				let hasAgentSteering = false;
 				for (let i = 0; i < messageCount; i++) {
@@ -1504,17 +1525,17 @@ export class Agent {
 					const role = "role" in message ? message.role : undefined;
 					const attribution = "attribution" in message ? message.attribution : undefined;
 					if (attribution === "user") {
-						return { queued: true, source: "user" };
+						return { queued: true, source: "user", interruptMode };
 					}
 					if (role !== "user") continue;
 					if (attribution !== "agent") {
-						return { queued: true, source: "user" };
+						return { queued: true, source: "user", interruptMode };
 					}
 					hasAgentSteering = true;
 				}
-				return { queued: true, source: hasAgentSteering ? "agent" : "system" };
+				return { queued: true, source: hasAgentSteering ? "agent" : "system", interruptMode };
 			},
-			waitForSteeringMessages: signal => this.#waitForSteeringMessages(signal),
+			waitForSteeringMessages: signal => this.#waitForSteeringMessages(runInterruptMode, signal),
 			hasIrcInterrupts: this.hasIrcInterrupts,
 			getFollowUpMessages: signal => this.#dequeueFollowUpMessagesAfterHooks(signal),
 			getAsideMessages: async () => (await this.#asideMessageProvider?.()) ?? [],

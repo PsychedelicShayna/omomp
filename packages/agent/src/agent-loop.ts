@@ -2479,7 +2479,7 @@ async function executeToolCalls(
 		// `signal` (external/user abort) is checked separately from the internal
 		// abort controllers: once the run is externally aborted it is unwinding
 		// and the interrupt would be redundant.
-		if (!shouldInterruptImmediately || signal?.aborted) {
+		if (signal?.aborted) {
 			return;
 		}
 		// Mid-batch steering detection must be non-consuming. If a direct
@@ -2487,6 +2487,7 @@ async function executeToolCalls(
 		// injection boundary below; polling it here would strand or drop messages.
 		let steeringQueued = false;
 		let steeringSource: SteeringInterruptSource | undefined;
+		let steeringInterruptMode = interruptMode;
 		if (hasSteeringMessages) {
 			const queuedState = await hasSteeringMessages();
 			if (typeof queuedState === "boolean") {
@@ -2496,9 +2497,10 @@ async function executeToolCalls(
 				const state: SteeringQueueState = queuedState;
 				steeringQueued = state.queued;
 				steeringSource = state.source ?? (state.queued ? "unknown" : undefined);
+				steeringInterruptMode = state.interruptMode ?? interruptMode;
 			}
 		}
-		if (steeringQueued) {
+		if (steeringQueued && steeringInterruptMode === "immediate") {
 			// Queued steering hard-aborts only interruptible waits and raises the
 			// cooperative soft signal for everything else: the boundary dequeue
 			// below injects the message as soon as running tools finish (or
@@ -2786,10 +2788,10 @@ async function executeToolCalls(
 	// otherwise wait out the tools' own window. Poll only non-consuming queues:
 	// detection hard-aborts interruptible waits (running or not yet started)
 	// and soft-signals cooperative tools (auto-background bash), so the boundary
-	// dequeue below injects the message promptly. Gated on immediate-interrupt
-	// mode; checkSteering is idempotent (no-op once triggered).
+	// dequeue below injects the message promptly. Queue overrides can request an
+	// immediate interrupt even when the global policy waits.
 	const watchSteeringWhileRunning =
-		shouldInterruptImmediately && (hasSteeringMessages !== undefined || hasIrcInterrupts !== undefined);
+		hasSteeringMessages !== undefined || (shouldInterruptImmediately && hasIrcInterrupts !== undefined);
 	const eventDrivenSteeringWatch =
 		watchSteeringWhileRunning && config.waitForSteeringMessages !== undefined && hasSteeringMessages !== undefined;
 	const steeringWatchAbortController = new AbortController();

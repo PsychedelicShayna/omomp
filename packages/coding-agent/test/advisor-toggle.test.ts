@@ -1139,9 +1139,9 @@ describe("AgentSession advisor toggle", () => {
 		if (!(adviseTool instanceof advisorModule.AdviseTool)) throw new Error("Expected advise tool");
 
 		adviseTool.beginUpdate(true);
-		const r1 = await adviseTool.execute("1", { note: "First concern", severity: "concern" });
-		const r2 = await adviseTool.execute("2", { note: "Second concern", severity: "concern" });
-		const r3 = await adviseTool.execute("3", { note: "Third concern", severity: "concern" });
+		const r1 = await adviseTool.execute("1", { note: "First cleanup issue", severity: "nit" });
+		const r2 = await adviseTool.execute("2", { note: "Second cleanup issue", severity: "nit" });
+		const r3 = await adviseTool.execute("3", { note: "Third cleanup issue", severity: "nit" });
 
 		expect(JSON.stringify(r1.content)).toContain("Deferred");
 		expect(JSON.stringify(r2.content)).toContain("Deferred");
@@ -1157,10 +1157,10 @@ describe("AgentSession advisor toggle", () => {
 		if (!(adviseTool instanceof advisorModule.AdviseTool)) throw new Error("Expected advise tool");
 
 		adviseTool.beginUpdate(true);
-		const r1 = await adviseTool.execute("1", { note: "First concern", severity: "concern" });
-		const r2 = await adviseTool.execute("2", { note: "Second concern", severity: "concern" });
-		const r3 = await adviseTool.execute("3", { note: "Third concern", severity: "concern" });
-		const r4 = await adviseTool.execute("4", { note: "Fourth concern", severity: "concern" });
+		const r1 = await adviseTool.execute("1", { note: "First cleanup issue", severity: "nit" });
+		const r2 = await adviseTool.execute("2", { note: "Second cleanup issue", severity: "nit" });
+		const r3 = await adviseTool.execute("3", { note: "Third cleanup issue", severity: "nit" });
+		const r4 = await adviseTool.execute("4", { note: "Fourth cleanup issue", severity: "nit" });
 
 		expect(JSON.stringify(r1.content)).toContain("Deferred");
 		expect(JSON.stringify(r2.content)).toContain("Deferred");
@@ -1168,33 +1168,24 @@ describe("AgentSession advisor toggle", () => {
 		expect(JSON.stringify(r4.content)).toContain("Rate limited");
 	});
 
-	it("rebuilds advisor runtime when maxNotesPerUpdate changes in settings", () => {
+	it("applies a changed advisor budget to subsequent advice", async () => {
 		session.settings.set("advisor.maxNotesPerUpdate", 1);
 		expect(session.setAdvisorEnabled(true)).toBe(true);
-		const advisor1 = session.getAdvisorAgent();
+		const firstTool = session.getAdvisorAgent()?.state.tools?.find(tool => tool.name === "advise");
+		if (!(firstTool instanceof advisorModule.AdviseTool)) throw new Error("Expected advise tool");
+		firstTool.beginUpdate(true);
+		await firstTool.execute("before-1", { note: "First cleanup issue", severity: "nit" });
+		const rejected = await firstTool.execute("before-2", { note: "Second cleanup issue", severity: "nit" });
+		expect(JSON.stringify(rejected.content)).toContain("Rate limited");
 
 		session.settings.set("advisor.maxNotesPerUpdate", 3);
 		expect(session.setAdvisorEnabled(true)).toBe(true);
-		const advisor2 = session.getAdvisorAgent();
-		expect(advisor2).not.toBe(advisor1);
-	});
-
-	it("propagates the resolved budget into the advisor model-visible system prompt", () => {
-		// Contract: SessionAdvisors must render the resolved budget into the
-		// prompt the advisor model actually receives. If the runtime stopped
-		// supplying it, the template falls back to 4 and this fails.
-		expect(session.setAdvisorEnabled(true)).toBe(true);
-		session.applyAdvisorConfigs([{ name: "Strict", maxNotesPerUpdate: 1 }], undefined);
-		let advisor = session.getAdvisorAgent();
-		if (!advisor) throw new Error("Expected advisor agent");
-		expect(advisor.state.systemPrompt.join("\n")).toContain("max 1 non-blockers/update (`blocker` exempt)");
-
-		session.settings.set("advisor.maxNotesPerUpdate", 3);
-		session.applyAdvisorConfigs([{ name: "Lenient" }], undefined, undefined);
-		expect(session.setAdvisorEnabled(true)).toBe(true);
-		advisor = session.getAdvisorAgent();
-		if (!advisor) throw new Error("Expected advisor agent");
-		expect(advisor.state.systemPrompt.join("\n")).toContain("max 3 non-blockers/update (`blocker` exempt)");
+		const updatedTool = session.getAdvisorAgent()?.state.tools?.find(tool => tool.name === "advise");
+		if (!(updatedTool instanceof advisorModule.AdviseTool)) throw new Error("Expected advise tool");
+		updatedTool.beginUpdate(true);
+		await updatedTool.execute("after-1", { note: "First updated cleanup issue", severity: "nit" });
+		const accepted = await updatedTool.execute("after-2", { note: "Second updated cleanup issue", severity: "nit" });
+		expect(JSON.stringify(accepted.content)).toContain("Deferred");
 	});
 
 	it("enforces precedence: per-advisor > shared WATCHDOG.yml > settings > default", async () => {
@@ -1208,10 +1199,10 @@ describe("AgentSession advisor toggle", () => {
 		if (!(tool instanceof advisorModule.AdviseTool)) throw new Error("Expected advise tool");
 		tool.beginUpdate(true);
 		for (let i = 1; i <= 5; i++) {
-			const res = await tool.execute(`s-${i}`, { note: `Specific note ${i}`, severity: "concern" });
+			const res = await tool.execute(`s-${i}`, { note: `Specific note ${i}`, severity: "nit" });
 			expect(JSON.stringify(res.content)).toContain("Deferred");
 		}
-		const s6 = await tool.execute("s-6", { note: "Specific note 6", severity: "concern" });
+		const s6 = await tool.execute("s-6", { note: "Specific note 6", severity: "nit" });
 		expect(JSON.stringify(s6.content)).toContain("Rate limited");
 
 		// 2. Shared (3) overrides settings (2) when per-advisor is undefined
@@ -1221,10 +1212,10 @@ describe("AgentSession advisor toggle", () => {
 		if (!(tool instanceof advisorModule.AdviseTool)) throw new Error("Expected advise tool");
 		tool.beginUpdate(true);
 		for (let i = 1; i <= 3; i++) {
-			const res = await tool.execute(`h-${i}`, { note: `Inheriting note ${i}`, severity: "concern" });
+			const res = await tool.execute(`h-${i}`, { note: `Inheriting note ${i}`, severity: "nit" });
 			expect(JSON.stringify(res.content)).toContain("Deferred");
 		}
-		const h4 = await tool.execute("h-4", { note: "Inheriting note 4", severity: "concern" });
+		const h4 = await tool.execute("h-4", { note: "Inheriting note 4", severity: "nit" });
 		expect(JSON.stringify(h4.content)).toContain("Rate limited");
 
 		// 3. Settings (2) overrides default (4) when shared and per-advisor are undefined
@@ -1234,10 +1225,10 @@ describe("AgentSession advisor toggle", () => {
 		if (!(tool instanceof advisorModule.AdviseTool)) throw new Error("Expected advise tool");
 		tool.beginUpdate(true);
 		for (let i = 1; i <= 2; i++) {
-			const res = await tool.execute(`set-${i}`, { note: `Settings note ${i}`, severity: "concern" });
+			const res = await tool.execute(`set-${i}`, { note: `Settings note ${i}`, severity: "nit" });
 			expect(JSON.stringify(res.content)).toContain("Deferred");
 		}
-		const set3 = await tool.execute("set-3", { note: "Settings note 3", severity: "concern" });
+		const set3 = await tool.execute("set-3", { note: "Settings note 3", severity: "nit" });
 		expect(JSON.stringify(set3.content)).toContain("Rate limited");
 	});
 });

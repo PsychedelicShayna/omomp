@@ -28,7 +28,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { IrcMessage } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
+import { convertToLlm, USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { Snowflake, TempDir } from "@oh-my-pi/pi-utils";
 
@@ -254,6 +254,217 @@ describe("AgentSession advisor auto-resume suppression", () => {
 		return persisted;
 	}
 
+	for (const scenario of ["concern", "blocker", "nit", "nit-continuation", "nit-abort"] as const) {
+		it(`delivers real advisor ${scenario} at its severity boundary`, async () => {
+			const continuation = scenario === "nit-continuation";
+			const abortAtCard = scenario === "nit-abort";
+			const severity = scenario === "concern" || scenario === "blocker" ? scenario : "nit";
+			const cardHookStarted = Promise.withResolvers<void>();
+			const releaseCardHook = Promise.withResolvers<void>();
+			const terminalSeen = Promise.withResolvers<void>();
+			const held = Promise.withResolvers<AbortSignal>();
+			const release = Promise.withResolvers<void>();
+			const advised = Promise.withResolvers<void>();
+			const aborted = Promise.withResolvers<void>();
+			const note = `Inspect the ${severity} fixture before accepting the result.`;
+			const parameters = type({});
+			const tools: AgentTool[] = [
+				{
+					name: "step",
+					label: "Step",
+					description: "Complete a primary step",
+					parameters,
+					execute: async () => ({ content: [{ type: "text", text: "checkpoint complete" }], details: {} }),
+				},
+				{
+					name: "held",
+					label: "Held",
+					description: "Hold an interruptible tool until explicitly released",
+					parameters,
+					interruptible: true,
+					execute: async (_id, _args, signal) => {
+						if (!signal) throw new Error("Expected a tool signal");
+						held.resolve(signal);
+						await Promise.race([
+							release.promise,
+							new Promise<void>(resolve => {
+								signal.addEventListener(
+									"abort",
+									() => {
+										aborted.resolve();
+										resolve();
+									},
+									{ once: true },
+								);
+							}),
+						]);
+						return {
+							content: [{ type: "text", text: signal.aborted ? "interrupted" : "held complete" }],
+							details: {},
+						};
+					},
+				},
+			];
+			const call = (name: string): MockResponse => ({
+				content: [{ type: "toolCall", name, arguments: {} }],
+				stopReason: "toolUse",
+			});
+			const mock = createMockModel({
+				responses: [
+					call("step"),
+					call("held"),
+					{ content: ["terminal result"], stopReason: "stop" },
+					{ content: ["corrected terminal result"], stopReason: "stop" },
+				],
+			});
+			const advisorMock = createMockModel({
+				responses: [
+					async () => {
+						await held.promise;
+						return {
+							content: [{ type: "toolCall", name: "advise", arguments: { note, severity } }],
+							stopReason: "toolUse",
+						};
+					},
+					() => {
+						advised.resolve();
+						return { content: [], stopReason: "stop" };
+					},
+					async () => {
+						if (!continuation) return { content: [], stopReason: "stop" };
+						await terminalSeen.promise;
+						return {
+							content: [
+								{
+									type: "toolCall",
+									name: "advise",
+									arguments: {
+										note: "The terminal result needs its missing correction.",
+										severity: "concern",
+									},
+								},
+							],
+							stopReason: "toolUse",
+						};
+					},
+					{ content: [], stopReason: "stop" },
+				],
+			});
+			const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+			const agent = new Agent({
+				getApiKey: () => "test-key",
+				initialState: { model, systemPrompt: ["Test"], tools },
+				streamFn: mock.stream,
+				convertToLlm,
+				interruptMode: severity === "blocker" ? "wait" : "immediate",
+			});
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.enabled": false,
+				"advisor.syncBacklog": "off",
+			});
+			settings.setModelRole("advisor", "anthropic/claude-sonnet-4-5");
+			const authStorage = await AuthStorage.create(":memory:");
+			authStorages.push(authStorage);
+			authStorage.setRuntimeApiKey("anthropic", "test-key");
+			const extensionRunner: AdvisorTestExtensionRunner | undefined = abortAtCard
+				? {
+						hasHandlers: eventType => eventType === "message_end",
+						emitBeforeAgentStart: async () => undefined,
+						emit: async event => {
+							if (event.type !== "message_end" || !event.message || !isAdvisorCard(event.message)) return;
+							cardHookStarted.resolve();
+							await releaseCardHook.promise;
+						},
+					}
+				: undefined;
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry: new ModelRegistry(authStorage, tempDir.join("models.yml")),
+				advisorTools: [],
+				advisorStreamFn: advisorMock.stream,
+				extensionRunner: extensionRunner as never,
+			});
+			expect(session.setAdvisorEnabled(true)).toBe(true);
+			agent.subscribe(event => {
+				if (
+					continuation &&
+					event.type === "message_end" &&
+					event.message.role === "assistant" &&
+					event.message.content.some(part => part.type === "text" && part.text === "terminal result")
+				) {
+					settings.override("advisor.syncBacklog", "1");
+					terminalSeen.resolve();
+				}
+			});
+			const visibleEvents: string[] = [];
+			const persistedAtEnd: boolean[] = [];
+			session.subscribe(event => {
+				if (event.type === "message_end" && isAdvisorCard(event.message) && event.message.content.includes(note)) {
+					visibleEvents.push("nit-card");
+				}
+				if (event.type === "agent_end" && event.isTerminal !== false) {
+					visibleEvents.push("terminal-end");
+					persistedAtEnd.push(
+						session.sessionManager
+							.getEntries()
+							.some(
+								entry =>
+									entry.type === "custom_message" &&
+									entry.customType === "advisor" &&
+									JSON.stringify(entry.content).includes(note),
+							),
+					);
+				}
+			});
+			const prompt = session.prompt("Run step then held, then finish.");
+			try {
+				const signal = await held.promise;
+				await advised.promise;
+				if (severity === "blocker") {
+					await aborted.promise;
+					expect(signal.aborted).toBe(true);
+				} else {
+					expect(signal.aborted).toBe(false);
+					expect(mock.calls).toHaveLength(2);
+					expect(agent.state.messages.filter(isAdvisorCard)).toHaveLength(0);
+				}
+				release.resolve();
+				if (abortAtCard) {
+					await cardHookStarted.promise;
+					expect(visibleEvents).toEqual([]);
+					const stopping = session.abort({ reason: USER_INTERRUPT_LABEL });
+					releaseCardHook.resolve();
+					await stopping;
+				}
+				await prompt;
+				await session.waitForIdle();
+				expect(mock.calls).toHaveLength(continuation ? 4 : 3);
+				const nextContext = JSON.stringify(mock.calls[2].context.messages);
+				if (severity === "nit") expect(nextContext).not.toContain(note);
+				else expect(nextContext).toContain(note);
+				expect(
+					agent.state.messages
+						.filter(isAdvisorCard)
+						.map(card => card.content)
+						.join("\n"),
+				).toContain(note);
+				expect(visibleEvents).toEqual(["nit-card", "terminal-end"]);
+				expect(persistedAtEnd).toEqual([true]);
+				if (continuation) {
+					const continuedContext = JSON.stringify(mock.calls[3].context.messages);
+					expect(continuedContext).toContain("The terminal result needs its missing correction.");
+					expect(continuedContext).not.toContain(note);
+				}
+			} finally {
+				release.resolve();
+				releaseCardHook.resolve();
+			}
+		});
+	}
+
 	it("preserves a final-yield blocker without starting a hidden post-yield turn", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const mock = createMockModel({
@@ -331,6 +542,40 @@ describe("AgentSession advisor auto-resume suppression", () => {
 		expect(persisted.at(-1)).toContain("Fixture verdict confirmed");
 		expect(advisorMock.calls.length).toBeGreaterThanOrEqual(1);
 		expect(mock.calls.length).toBe(1);
+	});
+
+	it("does not persist a delayed advisor card after clearing the conversation", async () => {
+		const hookStarted = Promise.withResolvers<void>();
+		const releaseHook = Promise.withResolvers<void>();
+		const extensionRunner: AdvisorTestExtensionRunner = {
+			hasHandlers: eventType => eventType === "message_end",
+			emitBeforeAgentStart: async () => undefined,
+			emit: async event => {
+				if (event.type !== "message_end" || !event.message || !isAdvisorCard(event.message)) return;
+				hookStarted.resolve();
+				await releaseHook.promise;
+			},
+		};
+		const { session, sessionManager } = await createCompletedAdvisorSession("concern", extensionRunner);
+		expect(session.setAdvisorEnabled(true)).toBe(true);
+		await session.prompt("answer with exactly one line");
+		await hookStarted.promise;
+		try {
+			expect(await session.resetSessionContext()).toBeDefined();
+			const boundary = sessionManager.getEntries().findLastIndex(entry => entry.type === "reset_boundary");
+			expect(boundary).toBeGreaterThanOrEqual(0);
+			releaseHook.resolve();
+			await session.waitForIdle();
+			expect(
+				sessionManager
+					.getEntries()
+					.slice(boundary + 1)
+					.filter(entry => entry.type === "custom_message" && entry.customType === "advisor"),
+			).toEqual([]);
+			expect(session.agent.state.messages.filter(isAdvisorCard)).toEqual([]);
+		} finally {
+			releaseHook.resolve();
+		}
 	});
 
 	it("waits for preserved advisor card hooks and persistence before reporting catch-up", async () => {

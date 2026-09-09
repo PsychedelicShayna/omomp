@@ -139,6 +139,8 @@ export interface SteeringQueueState {
 	queued: boolean;
 	/** Best-effort origin used only to word synthetic skipped-tool results. */
 	source?: SteeringInterruptSource;
+	/** Effective queue override; explicit immediate wins even behind wait-only messages. */
+	interruptMode?: "immediate" | "wait";
 }
 
 /**
@@ -149,8 +151,8 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 
 	/**
 	 * When to interrupt tool execution for steering messages.
-	 * - "immediate" = check after each tool call (default)
-	 * - "wait" = defer steering until the current turn completes
+	 * - "immediate" = interrupt running interruptible tools (default)
+	 * - "wait" = deliver at the next tool-batch boundary without interrupting tools
 	 */
 	interruptMode?: "immediate" | "wait";
 
@@ -245,8 +247,8 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	/**
 	 * Peeks whether steering messages are queued, without consuming them.
 	 *
-	 * Polled while a tool batch runs (unless interruptMode is "wait") to decide
-	 * whether to abort in-flight and skip not-yet-started *interruptible* waits;
+	 * Polled while a tool batch runs to decide whether the effective queue policy
+	 * (the override, otherwise interruptMode) should abort in-flight and skip not-yet-started *interruptible* waits;
 	 * every other already-emitted call still executes and the message injects
 	 * at the batch boundary. The queue keeps
 	 * owning its messages until the loop reaches the next injection boundary and
@@ -268,6 +270,8 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * The callback must not consume the queue; the loop still calls
 	 * {@link hasSteeringMessages} before aborting and injects through
 	 * {@link getSteeringMessages}.
+	 * Wait-only queued messages must not cause an already-resolved promise on every
+	 * call: wait for a queue change or an interrupting message instead.
 	 */
 	waitForSteeringMessages?: (signal?: AbortSignal) => Promise<void>;
 
