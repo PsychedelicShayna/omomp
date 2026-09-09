@@ -22,6 +22,12 @@ import { logger, parseFrontmatter } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
 import { writeArtifact } from "../session/artifacts";
 
+/** Keep staged-file writes and directory publication separately observable. */
+export const chroniclerStoreIO = {
+	writeArtifact,
+	rename: (staging: string, destination: string): Promise<void> => fs.rename(staging, destination),
+};
+
 export type BeatKind =
 	| "anecdote"
 	| "concept"
@@ -493,9 +499,15 @@ export class ChroniclerStore {
 		await fs.mkdir(staging);
 		try {
 			for (const record of batch.beats) {
-				await writeArtifact(path.join(staging, path.basename(record.path)), this.#renderBeatFile(batch.id, record));
+				await chroniclerStoreIO.writeArtifact(
+					path.join(staging, path.basename(record.path)),
+					this.#renderBeatFile(batch.id, record),
+				);
 			}
-			await writeArtifact(path.join(staging, MANIFEST_FILE), `${JSON.stringify(checkpoint, null, "\t")}\n`);
+			await chroniclerStoreIO.writeArtifact(
+				path.join(staging, MANIFEST_FILE),
+				`${JSON.stringify(checkpoint, null, "\t")}\n`,
+			);
 			await this.#publish(staging, destination, checkpoint, () => {
 				if (batch.revoked) {
 					throw new Error(`Chronicler batch ${batch.id} was revoked before publication`);
@@ -543,7 +555,7 @@ export class ChroniclerStore {
 		// the point of no return.
 		assertPublishable();
 		try {
-			await fs.rename(staging, destination);
+			await chroniclerStoreIO.rename(staging, destination);
 			return;
 		} catch (error) {
 			const readback = await this.#readManifest(destination);
@@ -1006,7 +1018,7 @@ export class ChroniclerStore {
 	 */
 	async #refreshCaches(): Promise<void> {
 		try {
-			await writeArtifact(path.join(this.#root, INDEX_FILE), this.#renderIndex());
+			await chroniclerStoreIO.writeArtifact(path.join(this.#root, INDEX_FILE), this.#renderIndex());
 		} catch (error) {
 			this.#warn("Chronicler index cache could not be written", {
 				error: String(error),
@@ -1020,7 +1032,10 @@ export class ChroniclerStore {
 				beatCount: this.#records.length,
 				updatedAt: new Date().toISOString(),
 			};
-			await writeArtifact(path.join(this.#root, STATE_FILE), `${JSON.stringify(state, null, "\t")}\n`);
+			await chroniclerStoreIO.writeArtifact(
+				path.join(this.#root, STATE_FILE),
+				`${JSON.stringify(state, null, "\t")}\n`,
+			);
 		} catch (error) {
 			this.#warn("Chronicler state cache could not be written", {
 				error: String(error),

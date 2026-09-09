@@ -30,6 +30,21 @@ const readSchema = type({
 	"limit?": type("1 <= number.integer <= 100").describe("Metadata page size; default 50."),
 });
 
+const chronicleDefinition = {
+	name: "chronicle",
+	description: chronicleDescription,
+	parameters: chronicleSchema,
+} as const;
+const finishDefinition = {
+	name: "finish_chronicle",
+	description: finishDescription,
+	parameters: finishSchema,
+} as const;
+const readDefinition = { name: "read_chronicle", description: readDescription, parameters: readSchema } as const;
+
+/** Budget the actual tool surfaces without constructing an executable capture batch. */
+export const CHRONICLER_TOOL_SCHEMAS = [chronicleDefinition, finishDefinition, readDefinition] as const;
+
 export interface ChronicleDetails {
 	id: string;
 	path: string;
@@ -55,10 +70,10 @@ function validateSources(sources: string[], known: ReadonlyMap<string, CaptureSo
 }
 
 export class ChronicleTool implements AgentTool<typeof chronicleSchema, ChronicleDetails> {
-	readonly name = "chronicle";
+	readonly name = chronicleDefinition.name;
 	readonly label = "Chronicle";
-	readonly description = chronicleDescription;
-	readonly parameters = chronicleSchema;
+	readonly description = chronicleDefinition.description;
+	readonly parameters = chronicleDefinition.parameters;
 	readonly intent = "omit" as const;
 
 	constructor(
@@ -117,10 +132,10 @@ export class ChronicleTool implements AgentTool<typeof chronicleSchema, Chronicl
 }
 
 export class FinishChronicleTool implements AgentTool<typeof finishSchema, FinishChronicleDetails> {
-	readonly name = "finish_chronicle";
+	readonly name = finishDefinition.name;
 	readonly label = "Finish Chronicle";
-	readonly description = finishDescription;
-	readonly parameters = finishSchema;
+	readonly description = finishDefinition.description;
+	readonly parameters = finishDefinition.parameters;
 	readonly intent = "omit" as const;
 
 	constructor(
@@ -154,10 +169,10 @@ export class FinishChronicleTool implements AgentTool<typeof finishSchema, Finis
 }
 
 export class ReadChronicleTool implements AgentTool<typeof readSchema, ReadChronicleDetails> {
-	readonly name = "read_chronicle";
+	readonly name = readDefinition.name;
 	readonly label = "Read Chronicle";
-	readonly description = readDescription;
-	readonly parameters = readSchema;
+	readonly description = readDefinition.description;
+	readonly parameters = readDefinition.parameters;
 	readonly intent = "omit" as const;
 
 	constructor(
