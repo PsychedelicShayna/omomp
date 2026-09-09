@@ -1,0 +1,1 @@
+Finalize a successfully completed capture pass, including a pass with no qualifying beat. Preserve unfinished material as bounded carry with its source entry IDs; otherwise use null. This MUST be the final tool call of the pass.
