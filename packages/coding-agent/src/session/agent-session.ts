@@ -788,14 +788,14 @@ export class AgentSession {
 	// Cursor exec, TUI listeners) is held back. Without this, a client that resumes
 	// on `agent_end` can fire its next `prompt` before #promptWithMessage's finally
 	#promptGeneration = 0;
-	/** Bumped by newSession()/switchSession() at the same point they clear the pending IRC/aside
-	 *  queue (restored on a rolled-back switchSession()). A message-queueing call that spans an
+	/** Bumped by newSession()/switchSession()/resetSessionContext() when replacing conversation state.
+	 *  Restored on a rolled-back switchSession(). A message-queueing call that spans an
 	 *  await (image normalization, vision description) captures this before the await and checks
 	 *  it again right before enqueueing into IrcBridge, so a record started for the outgoing
 	 *  session cannot land in a different session's queue after the transition. Deliberately
 	 *  distinct from #promptGeneration, which also changes on a plain abort() — asides must still
-	 *  enqueue and fold/resume normally across an in-session interrupt, only a session identity
-	 *  change should drop them. */
+	 *  enqueue and fold/resume normally across an in-session interrupt; only a conversation
+	 *  replacement should drop them. */
 	#sessionGeneration = 0;
 	/** Resolves when the currently in-flight `switchSession()` transition settles (success or
 	 *  rollback). newSession() never rolls #sessionGeneration back so it leaves this unset. An
@@ -2336,6 +2336,38 @@ export class AgentSession {
 
 	/** Emit an event to all listeners */
 	#emit(event: AgentSessionEvent): void {
+		if (event.type === "agent_end" && event.isTerminal !== false) {
+			const sessionGeneration = this.#sessionGeneration;
+			const promptSequence = this.#promptSequence;
+			this.#advisors.onPrimaryRunEnd();
+			// Return to the current subscriber gate before waiting: the released
+			// cards enter that same FIFO and must finish before terminal listeners
+			// can dispose the session.
+			const delivery = this.#advisors.waitForPendingCardEvents().then(() => {
+				if (
+					this.#isDisposed ||
+					sessionGeneration !== this.#sessionGeneration ||
+					promptSequence !== this.#promptSequence
+				)
+					return;
+				const willContinue =
+					this.agent.state.isStreaming ||
+					(!this.#abortInProgress &&
+						!this.#queuedMessageDrainBlocked &&
+						this.#canAutoContinueForFollowUp() &&
+						this.agent.hasQueuedMessages());
+				this.#emitToListeners(willContinue ? { ...event, isTerminal: false } : event);
+				// Terminal listeners can enqueue a steer after the synchronous settle
+				// drain already ran. Drain their work just as the old inline fanout did.
+				this.#drainStrandedQueuedMessages();
+			});
+			this.#trackPostPromptTask(delivery);
+			return;
+		}
+		this.#emitToListeners(event);
+	}
+
+	#emitToListeners(event: AgentSessionEvent): void {
 		// Copy array before iteration to avoid mutation during iteration.
 		const listeners = [...this.#eventListeners];
 		for (const l of listeners) {
@@ -2805,12 +2837,24 @@ export class AgentSession {
 		};
 	}
 
-	#persistMessageEnd(message: AgentMessage, promptGeneration: number): void {
-		// Session transitions bump the prompt generation before replacing the
-		// transcript. A message_end handler may still be awaiting an extension at
-		// that boundary; never let its delayed persistence append the previous
-		// conversation to the replacement session.
-		if (this.#promptGeneration !== promptGeneration) return;
+	#persistMessageEnd(
+		message: AgentMessage,
+		promptGeneration: number,
+		sessionGeneration: number,
+		promptSequence: number,
+	): void {
+		// User abort invalidates in-flight model output, not an advisor card already
+		// being published. Preserve that card across cancellation, but never across
+		// a replacement conversation or a genuinely new user prompt.
+		if (
+			this.#promptGeneration !== promptGeneration &&
+			!(
+				isAdvisorCard(message) &&
+				this.#sessionGeneration === sessionGeneration &&
+				this.#promptSequence === promptSequence
+			)
+		)
+			return;
 		if (message.role === "hookMessage" || message.role === "custom") {
 			// One-run instructions must not return from persisted history: prewalk
 			// nudges are consumed once, and Vibe context is rebuilt only while active.
@@ -2917,6 +2961,8 @@ export class AgentSession {
 
 	#processAgentEvent = async (event: AgentEvent): Promise<void> => {
 		const eventPromptGeneration = this.#promptGeneration;
+		const eventSessionGeneration = this.#sessionGeneration;
+		const eventPromptSequence = this.#promptSequence;
 		// A fresh run supersedes the previously settled (and pruned) refusal
 		// turn: state-based lookups take over again.
 		if (event.type === "agent_start") {
@@ -3073,10 +3119,20 @@ export class AgentSession {
 					try {
 						if (messageEndPersistence) {
 							await messageEndPersistence.persist(() =>
-								this.#persistMessageEnd(event.message, eventPromptGeneration),
+								this.#persistMessageEnd(
+									event.message,
+									eventPromptGeneration,
+									eventSessionGeneration,
+									eventPromptSequence,
+								),
 							);
 						} else {
-							this.#persistMessageEnd(event.message, eventPromptGeneration);
+							this.#persistMessageEnd(
+								event.message,
+								eventPromptGeneration,
+								eventSessionGeneration,
+								eventPromptSequence,
+							);
 						}
 					} catch (persistenceError) {
 						logger.warn("Failed to persist message after session event emission failed", {
@@ -3149,9 +3205,16 @@ export class AgentSession {
 		// Handle session persistence
 		if (event.type === "message_end") {
 			if (messageEndPersistence) {
-				await messageEndPersistence.persist(() => this.#persistMessageEnd(event.message, eventPromptGeneration));
+				await messageEndPersistence.persist(() =>
+					this.#persistMessageEnd(
+						event.message,
+						eventPromptGeneration,
+						eventSessionGeneration,
+						eventPromptSequence,
+					),
+				);
 			} else {
-				this.#persistMessageEnd(event.message, eventPromptGeneration);
+				this.#persistMessageEnd(event.message, eventPromptGeneration, eventSessionGeneration, eventPromptSequence);
 			}
 			if (this.#promptGeneration !== eventPromptGeneration) return;
 			if (interruptedThinkingMessage) {
@@ -4925,6 +4988,7 @@ export class AgentSession {
 		//     re-deliver stale tool output into the cleared conversation
 		//     (mirrors newSession()).
 		this.#promptGeneration++;
+		this.#sessionGeneration++;
 		await this.#cancelPostPromptTasks();
 		this.#cancelOwnAsyncJobs();
 
@@ -6642,6 +6706,7 @@ export class AgentSession {
 			this.#tools.clearTurnSystemPromptOverride();
 			this.#usagePreflightReadyForNextModelCall = false;
 			this.#endInFlight();
+			if (!options?.skipPostPromptRecoveryWait) await this.#waitForPostPromptRecovery(generation);
 		}
 	}
 
@@ -7165,6 +7230,7 @@ export class AgentSession {
 			this.#usagePreflightReadyForNextModelCall = false;
 			this.#recovery.setAcceptTerminalEmptyStop(false);
 			this.#endInFlight();
+			await this.#waitForPostPromptRecovery();
 		}
 	}
 
@@ -7178,6 +7244,7 @@ export class AgentSession {
 		options?: {
 			triggerTurn?: boolean;
 			deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
+			steeringInterruptMode?: "immediate" | "wait";
 			queueChipText?: string;
 			acceptTerminalEmptyStop?: boolean;
 		},
@@ -7310,6 +7377,7 @@ export class AgentSession {
 		options?: {
 			triggerTurn?: boolean;
 			deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
+			steeringInterruptMode?: "immediate" | "wait";
 			queueChipText?: string;
 			acceptTerminalEmptyStop?: boolean;
 		},
@@ -7323,6 +7391,7 @@ export class AgentSession {
 			| {
 					triggerTurn?: boolean;
 					deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
+					steeringInterruptMode?: "immediate" | "wait";
 					queueChipText?: string;
 					acceptTerminalEmptyStop?: boolean;
 			  }
@@ -7372,7 +7441,7 @@ export class AgentSession {
 			if (options?.deliverAs === "followUp") {
 				this.agent.followUp(normalizedAppMessage);
 			} else {
-				this.agent.steer(normalizedAppMessage);
+				this.agent.steer(normalizedAppMessage, { interruptMode: options?.steeringInterruptMode });
 			}
 			onAccepted?.();
 			this.#scheduleIdleQueueDrain();

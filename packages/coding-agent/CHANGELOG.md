@@ -10,6 +10,15 @@
   system with encrypted storage, resumable phases, a bounded profile, and
   explicit tmpfs persistence.
 - Added the `retry.waitForUsageReset` setting: when a provider reports usage-limit exhaustion with a reset time (5-hour or weekly quota windows on any provider), the session sleeps until the reset instead of failing fast past `retry.maxDelayMs`.
+
+### Changed
+
+- Advisor concerns now arrive between tool batches without cancelling running tools, blockers interrupt immediately, and nits appear only after the full primary turn ends.
+
+### Removed
+
+- Removed `advisor.immuneTurns`; each advisor severity now retains its delivery timing without a cooldown downgrade.
+
 ## [18.1.15] - 2026-09-08
 
 ### Added
