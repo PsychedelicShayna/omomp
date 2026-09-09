@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added independent, opt-in Chronicler capture with a built-in model role, per-session sourced markdown beats, bounded background passes, and immutable completed-batch checkpoints that recover without crash-replay duplicates. Local memory can remain enabled; task subagents do not capture.
 - Added per-advisor base system prompt editing in `/advisor configure`, with Backspace to restore the bundled default.
 - Added `omomp flash` to build and install an attested x86-64 baseline portable
   system with encrypted storage, resumable phases, a bounded profile, and

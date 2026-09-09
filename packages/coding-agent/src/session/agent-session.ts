@@ -100,6 +100,7 @@ import { type AdvisorConfig, loadAdvisorTranscriptCosts } from "../advisor";
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, type AsyncJob, AsyncJobManager } from "../async";
 import { reset as resetCapabilities } from "../capability";
 import type { EffectiveExtensionRoots } from "../capability/types";
+import { SessionChronicler } from "../chronicler/session-chronicler";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
 import type { ModelRegistry } from "../config/model-registry";
 import { type ResolvedModelRoleValue, resolveModelOverride } from "../config/model-resolver";
@@ -613,6 +614,7 @@ export class AgentSession {
 	#goalModeState: GoalModeState | undefined;
 	#goalRuntime: GoalRuntime;
 	readonly #advisors: SessionAdvisors;
+	readonly #chronicler: SessionChronicler;
 	/** Resolves once the resume-time advisor spend backfill settles. */
 	#advisorCostRestore: Promise<void> = Promise.resolve();
 	#goalTurnCounter = 0;
@@ -1448,6 +1450,7 @@ export class AgentSession {
 			}
 			this.#loopGuards.recordTurn(messages, context);
 			await this.#prewalk.advanceAtTurnEnd(messages, context);
+			this.#chronicler.onPrimaryTurnEnd(context?.willContinue, context?.toolResults.at(-1) ?? context?.message);
 			await this.#advisors.onPrimaryTurnEnd(messages, context?.willContinue, signal);
 			await this.#maintenance.maintainContextMidRun(messages, signal, context);
 		});
@@ -1747,6 +1750,19 @@ export class AgentSession {
 			configs: config.advisorConfigs,
 			streamFn: config.advisorStreamFn,
 			transformProviderContext: config.transformProviderContext,
+		});
+		this.#chronicler = new SessionChronicler({
+			agent: this.agent,
+			sessionManager: this.sessionManager,
+			settings: this.settings,
+			modelRegistry: this.#modelRegistry,
+			obfuscator: this.#obfuscator,
+			providerSessionState: this.#providerSessionState,
+			preferWebsockets: this.#preferWebsockets,
+			isDisposed: () => this.#isDisposed,
+			isCaptureEligible: () => this.#agentKind === "main",
+			emitNotice: (level, message, source) => this.emitNotice(level, message, source),
+			cwd: () => this.sessionManager.getCwd(),
 		});
 
 		const maintenanceHost: SessionMaintenanceHost = {
@@ -2736,9 +2752,10 @@ export class AgentSession {
 			if (message.role === "custom" && message.customType === "ttsr-injection") {
 				this.#ttsr.markInjectedFromDetails(message.details);
 			}
-			return;
+		} else {
+			this.#persistSessionMessageIfMissing(message);
 		}
-		this.#persistSessionMessageIfMissing(message);
+		this.#chronicler.onPrimaryMessagePersisted(message);
 	}
 
 	/**
@@ -4432,6 +4449,7 @@ export class AgentSession {
 		this.agent.setAsideMessageProvider(undefined);
 		this.agent.hasIrcInterrupts = undefined;
 		this.#advisors.stopRuntime();
+		this.#chronicler.beginStop();
 		this.#eval.beginDispose();
 	}
 
@@ -4583,6 +4601,7 @@ export class AgentSession {
 			shutdownTinyTitleClient(),
 			this.#disconnectOwnedMcp(),
 			advisorRecorderClosed,
+			this.#chronicler.drain(),
 			hindsightState?.flushRetainQueue() ?? Promise.resolve(),
 			this.#disposeMnemopi(mnemopiState, options.mnemopiConsolidateTimeoutMs),
 			sharpshooterFlushed,
