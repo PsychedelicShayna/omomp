@@ -30,10 +30,12 @@ import {
 	type TUI,
 	truncateToWidth,
 } from "@oh-my-pi/pi-tui";
+import { prompt } from "@oh-my-pi/pi-utils";
 import {
 	ADVISOR_DEFAULT_TOOL_NAMES,
 	type AdvisorConfig,
 	type AdvisorConfigScope,
+	resolveAdvisorMaxNotesPerUpdate,
 	type WatchdogConfigDoc,
 } from "../../advisor";
 import type { ModelRegistry } from "../../config/model-registry";
@@ -354,17 +356,17 @@ export class AdvisorConfigOverlayComponent implements Component {
 		if (this.#doc.advisors.length === 0) this.#doc.advisors.push({ name: "default" });
 	}
 
-	#isBareDefaultDoc(doc: WatchdogConfigDoc): boolean {
-		if (doc.advisors.length !== 1 || doc.instructions?.trim()) return false;
+	#hasSyntheticDefaultAdvisor(doc: WatchdogConfigDoc): boolean {
+		if (doc.advisors.length !== 1) return false;
 		const advisor = doc.advisors[0];
-		if (!advisor) return false;
 		return (
-			advisor.name === "default" &&
+			advisor?.name === "default" &&
 			!advisor.model?.trim() &&
 			advisor.tools === undefined &&
 			!advisor.instructions?.trim() &&
 			advisor.systemPrompt === undefined &&
-			advisor.enabled !== false
+			advisor.enabled !== false &&
+			advisor.maxNotesPerUpdate === undefined
 		);
 	}
 
@@ -425,7 +427,8 @@ export class AdvisorConfigOverlayComponent implements Component {
 			return;
 		}
 		if (value === "save") {
-			await this.#cb.save(this.#scope, this.#isBareDefaultDoc(this.#doc) ? { advisors: [] } : this.#doc);
+			const doc = this.#hasSyntheticDefaultAdvisor(this.#doc) ? { ...this.#doc, advisors: [] } : this.#doc;
+			await this.#cb.save(this.#scope, doc);
 			this.#dirty = false;
 			this.#showList();
 			return;
@@ -641,7 +644,14 @@ export class AdvisorConfigOverlayComponent implements Component {
 		const editor = new HookEditorComponent(
 			this.#tui,
 			`System prompt — ${advisor.name}`,
-			advisor.systemPrompt ?? advisorSystemPrompt,
+			advisor.systemPrompt ??
+				prompt.render(advisorSystemPrompt, {
+					max_notes_per_update: resolveAdvisorMaxNotesPerUpdate(
+						advisor.maxNotesPerUpdate,
+						this.#doc.maxNotesPerUpdate,
+						this.#settings.get("advisor.maxNotesPerUpdate"),
+					),
+				}),
 			value => {
 				advisor.systemPrompt = value;
 				this.#dirty = true;
