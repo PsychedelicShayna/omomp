@@ -19,6 +19,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as discovery from "@oh-my-pi/pi-coding-agent/discovery";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
+import { createSubagentSettings } from "@oh-my-pi/pi-coding-agent/task/executor";
 import { AUTO_IMAGE_PROVIDER_ORDER } from "@oh-my-pi/pi-coding-agent/tools/image-providers";
 import { SEARCH_PROVIDER_ORDER } from "@oh-my-pi/pi-coding-agent/web/search/types";
 import { getProjectAgentDir, TempDir } from "@oh-my-pi/pi-utils";
@@ -87,6 +88,19 @@ describe("Settings", () => {
 		settingsState = undefined;
 		await Bun.sleep(0);
 		await tempDir?.remove();
+	});
+
+	it("persists capture independently of Local memory and excludes all subagents", async () => {
+		const settings = await Settings.init({ cwd: projectDir, agentDir });
+		settings.set("memory.backend", "local");
+		settings.set("chronicler.enabled", true);
+		await settings.flush();
+		resetSettingsForTest();
+		const reloaded = await Settings.init({ cwd: projectDir, agentDir });
+		expect(reloaded.get("memory.backend")).toBe("local");
+		expect(reloaded.get("chronicler.enabled")).toBe(true);
+		expect(createSubagentSettings(reloaded, { "chronicler.enabled": true }).get("chronicler.enabled")).toBe(false);
+		expect(reloaded.get("chronicler.enabled")).toBe(true);
 	});
 
 	describe("main config file selection", () => {

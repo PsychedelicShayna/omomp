@@ -1,0 +1,1 @@
+Stage one standalone semantic beat from supplied transcript or committed evidence. Cite source entry IDs, never filenames. Related/supersedes references use beat IDs; corrections create new beats. Staging is not publication.
